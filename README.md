@@ -13,12 +13,7 @@ Built with **SvelteKit 2 + Svelte 5**, **MySQL**, and **[python-kasa](https://gi
 
 | Home dashboard | Devices | Rules editor |
 |---|---|---|
-| ![Home](docs/screenshots/home.png) | ![Devices](docs/screenshots/devices.png) | ![Rules](docs/screenshots/rules.png) |
-
-| Timers | Widgets | Settings |
-|---|---|---|
-| ![Timers](docs/screenshots/timers.png) | ![Widgets](docs/screenshots/widgets.png) | ![Settings](docs/screenshots/settings.png) |
-
+| ![Home](docs/home.png) | ![Devices](docs/devices.png) | ![Rules](docs/rules.png) |
 ---
 
 ## ✨ Features
