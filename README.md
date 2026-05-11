@@ -9,8 +9,6 @@ Built with **SvelteKit 2 + Svelte 5**, **MySQL**, and **[python-kasa](https://gi
 
 ## 📸 Screenshots
 
-> *(Add your own screenshots here — drag and drop images into this section on GitHub)*
-
 | Home dashboard | Devices | Rules editor |
 |---|---|---|
 | ![Home](docs/home.png) | ![Devices](docs/devices.png) | ![Rules](docs/rules.png) |
@@ -70,7 +68,7 @@ A **background scheduler** runs inside the Node process and every `POLL_INTERVAL
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/tapo-smart-home.git
+git clone https://github.com/JeyC0b/tapo-smart-home.git
 cd tapo-smart-home
 ```
 
@@ -293,16 +291,6 @@ tapo-smart-home/
 ├── .env.example                # Environment variable template
 └── package.json
 ```
-
----
-
-## 🤝 Contributing
-
-Pull requests are welcome! For major changes, please open an issue first.
-
-1. Fork the repo and create your branch from `main`.
-2. Run `npm run check` to verify there are no TypeScript errors.
-3. Open a pull request with a clear description of your changes.
 
 ---
 
