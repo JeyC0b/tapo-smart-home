@@ -1,80 +1,133 @@
-﻿# Tapo Smart-Home Dashboard
+﻿# 🔥 Tapo Smart-Home Dashboard
 
-A self-hosted web dashboard for controlling **TP-Link Tapo** devices — hubs, plugs, bulbs, LED strips, temperature sensors, motion sensors, and fans.  
-Built with **SvelteKit 2 + Svelte 5**, **MySQL**, and **python-kasa** as the device communication layer.
+> A self-hosted, open-source web dashboard for **TP-Link Tapo** smart-home devices.  
+> Control plugs, bulbs, LED strips, hubs, temperature/humidity sensors, motion detectors, door/window contacts, and fans — all from one beautiful UI.
 
-> **Language support:** the UI ships with English and Czech. Switch at any time via Settings → Language.
+Built with **SvelteKit 2 + Svelte 5**, **MySQL**, and **[python-kasa](https://github.com/python-kasa/python-kasa)** as the device communication layer.
 
 ---
 
-## Features
+## 📸 Screenshots
+
+> *(Add your own screenshots here — drag and drop images into this section on GitHub)*
+
+| Home dashboard | Devices | Rules editor |
+|---|---|---|
+| ![Home](docs/screenshots/home.png) | ![Devices](docs/screenshots/devices.png) | ![Rules](docs/screenshots/rules.png) |
+
+| Timers | Widgets | Settings |
+|---|---|---|
+| ![Timers](docs/screenshots/timers.png) | ![Widgets](docs/screenshots/widgets.png) | ![Settings](docs/screenshots/settings.png) |
+
+---
+
+## ✨ Features
 
 | Area | Details |
 |---|---|
-| **Devices** | Auto-discover via hub IP, import & rename, room assignment, online/offline tracking |
-| **Groups** | Logical device groups with shared on/off/brightness/colour controls |
-| **Rules** | Time- and sensor-based automation with multi-step actions and hysteresis support |
-| **Timers** | One-shot and repeating scheduled actions; vacation/random window mode |
-| **Widgets** | Customisable dashboard tiles: device, group, sensor, HTTP-fetch, label, spacer, divider |
-| **Home screen** | Drag-and-drop grid layout (desktop) / stacked list (mobile) |
-| **Logs** | Structured log viewer with debug / info / warn / error levels |
-| **Auth** | Single-admin password; guests can view and optionally control allowed devices |
+| **Home dashboard** | Drag-and-drop responsive grid (desktop) / stacked list (mobile); fully customisable per user |
+| **Devices** | Auto-discover via hub IP, import & rename, room assignment, online/offline tracking, energy monitoring |
+| **Groups** | Logical device groups with shared on/off/brightness/colour/fan controls |
+| **Automation rules** | Time- and sensor-based rules with multi-step actions, priorities, and hysteresis support |
+| **Timers** | One-shot and repeating scheduled actions; vacation/random-window mode |
+| **Widgets** | Custom dashboard tiles: device state, group toggle, sensor readings, HTTP data fetch, label, spacer, divider |
+| **Logs** | Structured log viewer (debug / info / warn / error) with filtering and pagination |
+| **Auth** | Single-admin password; guests can view and optionally control individually allowed devices |
 | **Themes** | Light / dark, persisted per browser |
-| **i18n** | English + Czech, persisted per browser via cookie |
+| **Language** | English + Czech UI, persisted per browser via cookie |
 
 ---
 
-## Architecture
+## 🏗 Architecture
 
 ```
-Browser (SvelteKit SSR + client hydration)
-        │  REST API
-        ▼
+Browser  (SvelteKit SSR + client hydration)
+    │
+    │  REST API (JSON)
+    ▼
 SvelteKit Node.js server
-  ├── MySQL  ── app_hubs, app_devices, app_rules, app_timers, …
-  └── child_process ── scripts/kasa_bridge.py ── python-kasa library
+    ├── MySQL ── app_hubs, app_devices, app_rules, app_timers, app_widgets …
+    └── child_process ── scripts/kasa_bridge.py ── python-kasa library
 ```
 
-A **background scheduler** runs inside the Node process.  
-Every `POLL_INTERVAL_SECONDS` (default 180 s) it:
+A **background scheduler** runs inside the Node process and every `POLL_INTERVAL_SECONDS`:
 
-1. Polls all enabled hubs and upserts live state into `app_devices`.
-2. Appends a snapshot row to `app_readings` (history).
-3. Runs the **rule engine**:
-   - Each enabled rule votes ON or OFF when its conditions match.
-   - **ON wins over OFF** — any rule wanting power keeps the target on.
-   - **Dependencies** (`app_dependencies`) can force a target on when a source is on.
-   - An action is only sent when the desired state differs from the actual state.
-4. Fires due timers and re-queues recurring ones.
+1. Polls all enabled hubs in parallel and upserts live state into `app_devices`.
+2. Appends a reading snapshot to `app_readings` (history).
+3. Runs the **rule engine** — each rule votes ON/OFF; **ON wins over OFF**; dependencies can force additional targets on.
+4. Fires due timers and re-queues repeating ones.
 
 ---
 
-## Requirements
+## 📋 Requirements
 
 | Dependency | Minimum version |
 |---|---|
 | Node.js | 20 LTS |
 | MySQL / MariaDB | 8.0 / 10.6 |
 | Python | 3.10 |
-| python-kasa | 0.10.2 (bundled in `python-libs/`) |
+| python-kasa | 0.10.2 |
 
 ---
 
-## Installation
+## 🚀 Installation
 
-### 1. Create the database
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/YOUR_USERNAME/tapo-smart-home.git
+cd tapo-smart-home
+```
+
+### 2. Create the database
 
 ```bash
 mysql -u root -p < db/schema.sql
 ```
 
-Create a dedicated MySQL user with full privileges on the `tapo` schema.
+Then create a dedicated MySQL user:
 
-### 2. Python dependencies
+```sql
+CREATE USER 'tapo'@'localhost' IDENTIFIED BY 'yourpassword';
+GRANT ALL PRIVILEGES ON tapo.* TO 'tapo'@'localhost';
+FLUSH PRIVILEGES;
+```
 
-`python-kasa` and all its dependencies are pre-bundled in the `python-libs/` directory — **no `pip install` needed**.
+### 3. Install Python dependencies (python-kasa)
 
-### 3. Configure the environment
+The app communicates with Tapo devices through `scripts/kasa_bridge.py`, which requires **python-kasa** and its dependencies.  
+Install them into a local `python-libs/` directory — no system-wide pip install or virtual environment activation needed at runtime:
+
+```bash
+# Create the target directory
+mkdir python-libs
+
+# Download python-kasa 0.10.2 and all dependencies into it
+pip install python-kasa==0.10.2 --target ./python-libs --no-compile
+```
+
+> **Why `--target ./python-libs`?**  
+> The bridge script adds this folder to `sys.path` at startup via the `PYTHON_LIBS` env variable.  
+> This isolates the dependencies from your system Python and avoids needing to activate a virtual environment every time the app runs.
+
+**Verify:**
+
+```bash
+python3 -c "import sys; sys.path.insert(0, './python-libs'); import kasa; print(kasa.__version__)"
+# Expected output: 0.10.2
+```
+
+**Alternative — use a virtual environment instead:**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install python-kasa==0.10.2
+```
+
+Then set `PYTHON_BIN=.venv/bin/python3` (Windows: `.venv\Scripts\python.exe`) in your `.env` and leave `PYTHON_LIBS` empty.
+
+### 4. Configure the environment
 
 ```bash
 cp .env.example .env
@@ -91,40 +144,41 @@ DB_PASSWORD=yourpassword
 DB_NAME=tapo
 
 # Python bridge
-PYTHON_BIN=python3                # or an absolute path
+PYTHON_BIN=python3                 # or an absolute path / venv path
 KASA_BRIDGE=./scripts/kasa_bridge.py
-PYTHON_LIBS=../python-libs        # path to the bundled python-kasa
+PYTHON_LIBS=./python-libs          # path to the python-kasa install (step 3)
 
-# Scheduler
-POLL_INTERVAL_SECONDS=180         # polling interval in seconds
+# Background scheduler
+POLL_INTERVAL_SECONDS=180          # how often hubs are polled (seconds)
 RULES_ENABLED=true
 ```
 
-### 4. Install Node.js dependencies
+### 5. Install Node.js dependencies
 
 ```bash
 npm install
 ```
 
-### 5. Start (development)
+### 6. Start (development mode)
 
 ```bash
 npm run dev
 ```
 
-Open `http://localhost:5173`.
+Open **http://localhost:5173** in your browser.
 
-### 6. First-run setup in the UI
+### 7. First-run setup in the UI
 
-1. A setup dialog appears — choose an **admin password**.
+1. A **setup dialog** appears — choose an admin password.
 2. Go to **Settings → Hubs** → add a hub (IP address + Tapo account e-mail & password).  
    The app calls `kasa_bridge.py discover` to verify the connection.
 3. Go to **Devices** → click **Import from hubs**, then rename devices and assign rooms.
 4. Optionally create **Groups**, **Rules**, **Timers**, and **Widgets**.
+5. Drag tiles onto the **Home** dashboard — or use the **+** picker to add widget tiles.
 
 ---
 
-## Production
+## 🏭 Production deployment
 
 ### Build
 
@@ -140,7 +194,7 @@ node build/index.js
 
 The scheduler starts automatically on the first HTTP request.
 
-> **Important:** the scheduler requires a persistent long-lived Node process.  
+> **Important:** the scheduler requires a persistent, long-lived Node process.  
 > It will **not** work in serverless environments (Vercel, Cloudflare Workers, etc.).
 
 ### Recommended: pm2
@@ -149,55 +203,120 @@ The scheduler starts automatically on the first HTTP request.
 npm install -g pm2
 pm2 start build/index.js --name tapo
 pm2 save
-pm2 startup
+pm2 startup   # follow the printed instructions to enable auto-start on reboot
 ```
 
-Pass environment variables via a `.env` file in the working directory or a `pm2` ecosystem file.
+Create a `pm2` ecosystem file for a cleaner setup:
+
+```js
+// ecosystem.config.cjs
+module.exports = {
+  apps: [{
+    name: 'tapo',
+    script: 'build/index.js',
+    cwd: '/path/to/tapo-smart-home',
+    env_file: '.env',
+    restart_delay: 5000,
+    max_restarts: 10
+  }]
+};
+```
+
+```bash
+pm2 start ecosystem.config.cjs
+```
+
+### Reverse proxy (nginx example)
+
+```nginx
+server {
+    listen 80;
+    server_name tapo.yourdomain.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Add a TLS certificate with [Certbot](https://certbot.eff.org/) (`certbot --nginx`).
 
 ---
 
-## Security notes
+## 🔒 Security notes
 
-- Tapo credentials are stored **per hub in the database** — not in source code.
+- Tapo credentials are stored **per hub in the database** — never in source code or `.env`.
 - All database queries use **parameterised statements** (`mysql2`).
-- The HTTP widget proxy and background fetcher block **private/loopback IP ranges** (SSRF protection).
-- Deploy behind a **reverse proxy** (nginx, Caddy) with HTTPS — the app does not terminate TLS itself.
-- `kasa_bridge.py` receives the Tapo password as a CLI argument, which is visible in process listings (`ps`). Run the process under a dedicated, unprivileged system user.
+- The HTTP widget proxy and background cache block **private/loopback IP ranges** (SSRF protection).
+- Deploy behind a **reverse proxy with HTTPS** — the app does not terminate TLS itself.
+- `kasa_bridge.py` receives the Tapo password as a CLI argument, which is visible in process listings (`ps`). Run under a dedicated, unprivileged system user for additional isolation.
 
 ---
 
-## Project structure
+## 🗄 Database
+
+`db/schema.sql` creates all tables for a **fresh install**.  
+For upgrading an existing installation, incremental migration scripts will be added to `db/migrations/`.
+
+Key tables: `app_hubs`, `app_devices`, `app_readings`, `app_rules`, `app_rule_conditions`, `app_dependencies`, `app_timers`, `app_timer_runs`, `app_widgets`, `app_groups`, `app_group_members`, `app_logs`, `app_settings`, `app_admin_sessions`.
+
+---
+
+## 📁 Project structure
 
 ```
-app/
+tapo-smart-home/
 ├── db/
-│   ├── schema.sql             # Full schema for fresh installs
-│   └── migrations/            # Incremental upgrade scripts
+│   ├── schema.sql              # Full schema for fresh installs
+│   └── migrations/             # Incremental upgrade scripts
+├── python-libs/                # ← created by pip install --target (not in git)
+│   └── kasa/ …                 # python-kasa 0.10.2 + all dependencies
 ├── scripts/
-│   └── kasa_bridge.py         # Python ↔ python-kasa bridge (spawned by Node)
+│   └── kasa_bridge.py          # Python ↔ python-kasa bridge (spawned by Node)
 ├── src/
-│   ├── hooks.server.ts        # Scheduler bootstrap + auth/RBAC middleware
+│   ├── hooks.server.ts         # Scheduler bootstrap + auth/RBAC middleware
 │   ├── lib/
-│   │   ├── i18n/              # Translation files (en.json, cs.json)
-│   │   ├── server/            # DB, poller, rule engine, scheduler, auth
-│   │   ├── types.ts           # Shared TypeScript types
-│   │   └── ui/                # Reusable Svelte components
+│   │   ├── i18n/               # Translation files (en.json, cs.json)
+│   │   ├── server/             # DB helpers, poller, rule engine, scheduler, auth
+│   │   ├── types.ts            # Shared TypeScript types
+│   │   └── ui/                 # Reusable Svelte components (DeviceCard, GroupCard …)
 │   └── routes/
-│       ├── +layout.svelte     # App shell (nav, auth modal, theme switcher)
-│       ├── +page.svelte       # Home dashboard (widget grid)
-│       ├── api/               # REST endpoints
-│       ├── devices/           # Device management
-│       ├── groups/            # Group management
-│       ├── rules/             # Automation rule editor
-│       ├── settings/          # App settings (hubs, credentials, logging)
-│       ├── timers/            # Scheduled timers
-│       ├── widgets/           # Widget editor
-│       └── logs/              # Log viewer
-└── python-libs/               # Bundled python-kasa 0.10.2 (no pip install required)
+│       ├── +layout.svelte      # App shell (nav, auth modal, theme switcher)
+│       ├── +page.svelte        # Home dashboard (widget grid)
+│       ├── api/                # REST API endpoints
+│       ├── devices/            # Device management page
+│       ├── groups/             # Group management page
+│       ├── rules/              # Automation rule editor
+│       ├── settings/           # App settings (hubs, credentials, logging)
+│       ├── timers/             # Scheduled timers page
+│       ├── widgets/            # Widget editor page
+│       └── logs/               # Log viewer page
+├── .env.example                # Environment variable template
+└── package.json
 ```
 
 ---
 
-## License
+## 🤝 Contributing
 
-MIT
+Pull requests are welcome! For major changes, please open an issue first.
+
+1. Fork the repo and create your branch from `main`.
+2. Run `npm run check` to verify there are no TypeScript errors.
+3. Open a pull request with a clear description of your changes.
+
+---
+
+## 📄 License
+
+[MIT](LICENSE)
+
+---
+
+<p align="center">
+  Made with ❤️ for TP-Link Tapo users who want full local control of their smart home.
+</p>
