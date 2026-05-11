@@ -1,0 +1,29 @@
+{
+  "name": "tapo-heating",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --host",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "db:init": "node ./scripts/db-init.js"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-node": "^5.2.12",
+    "@sveltejs/kit": "^2.20.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@tailwindcss/forms": "^0.5.10",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.3",
+    "svelte": "^5.20.0",
+    "svelte-check": "^4.1.4",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3",
+    "vite": "^6.2.0"
+  },
+  "dependencies": {
+    "mysql2": "^3.12.0"
+  }
+}

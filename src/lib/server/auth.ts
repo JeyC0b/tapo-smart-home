@@ -1,0 +1,115 @@
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { q, exec } from './db';
+import { getSetting, setSetting } from './settings';
+import { log } from './logger';
+
+const COOKIE_NAME = 'tapo_admin';
+const SESSION_TTL_DAYS = 30;
+
+function sha256(s: string): string {
+  return createHash('sha256').update(s, 'utf8').digest('hex');
+}
+
+/** True when no admin password has ever been set — initial state, everything visible. */
+export async function isAdminPasswordSet(): Promise<boolean> {
+  const h = await getSetting('admin_password_hash', '');
+  return !!h;
+}
+
+export async function setAdminPassword(plain: string): Promise<void> {
+  if (!plain || plain.length < 4) throw new Error('Password must be at least 4 characters long.');
+  const salt = randomBytes(16).toString('hex');
+  const hash = sha256(salt + ':' + plain);
+  await setSetting('admin_password_salt', salt);
+  await setSetting('admin_password_hash', hash);
+  // Drop all existing sessions — password has changed.
+  await exec('DELETE FROM app_admin_sessions');
+}
+
+export async function clearAdminPassword(): Promise<void> {
+  await setSetting('admin_password_salt', '');
+  await setSetting('admin_password_hash', '');
+  await exec('DELETE FROM app_admin_sessions');
+}
+
+export async function verifyAdminPassword(plain: string): Promise<boolean> {
+  const salt = await getSetting('admin_password_salt', '');
+  const hash = await getSetting('admin_password_hash', '');
+  if (!salt || !hash) return false;
+  const calc = sha256(salt + ':' + plain);
+  // constant-time compare
+  try {
+    const a = Buffer.from(calc, 'hex');
+    const b = Buffer.from(hash, 'hex');
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  } catch { return false; }
+}
+
+export async function createAdminSession(userAgent?: string): Promise<{ token: string; expiresAt: Date }> {
+  const token = randomBytes(32).toString('hex');
+  const expires = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 3600 * 1000);
+  await exec(
+    'INSERT INTO app_admin_sessions (token, expires_at, user_agent) VALUES (?,?,?)',
+    [token, expires, (userAgent ?? '').slice(0, 250)]
+  );
+  await log('info', 'auth', 'admin session created');
+  return { token, expiresAt: expires };
+}
+
+export async function destroyAdminSession(token: string): Promise<void> {
+  if (!token) return;
+  await exec('DELETE FROM app_admin_sessions WHERE token = ?', [token]);
+}
+
+export async function isValidSession(token: string | undefined | null): Promise<boolean> {
+  if (!token) return false;
+  const r = await q<{ token: string }>(
+    'SELECT token FROM app_admin_sessions WHERE token = ? AND expires_at > NOW() LIMIT 1',
+    [token]
+  );
+  if (r.length === 0) return false;
+  // best-effort touch — do not block the hot path on failure
+  exec('UPDATE app_admin_sessions SET last_seen_at = NOW() WHERE token = ?', [token]).catch(() => {});
+  return true;
+}
+
+export const AUTH_COOKIE_NAME = COOKIE_NAME;
+export const AUTH_COOKIE_OPTS = {
+  path: '/',
+  httpOnly: true,
+  sameSite: 'lax' as const,
+  // secure: true — leave the decision to the deployment (proxy / HTTPS)
+  maxAge: SESSION_TTL_DAYS * 24 * 3600
+};
+
+/**
+ * Decides whether the given request may perform a mutation (POST/PATCH/DELETE).
+ * - GET is always allowed (read / dashboard / overview).
+ * - When no password is set yet (initial setup), everything is allowed (admin = guest).
+ * - When set, mutations require a valid session, except for the whitelist
+ *   for device control (toggle/light/fan/countdown), which guests may use too.
+ */
+export function isMutationAllowedPath(pathname: string, method: string): 'always' | 'admin-only' | 'guest-ok' {
+  const m = method.toUpperCase();
+  if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return 'always';
+
+  // Auth endpoints (login/logout) are always accessible.
+  if (pathname === '/api/auth' || pathname === '/api/auth/logout') return 'always';
+
+  // Public-safe actions: toggle / lights / fan / countdown.
+  // Everything else under /api/devices (e.g. PATCH excluded, sort_order, DELETE)
+  // i /api/widgets, /api/timers, /api/rules, /api/settings, /api/hubs → admin only.
+  const guestPlayPatterns: RegExp[] = [
+    /^\/api\/devices\/\d+\/state$/,
+    /^\/api\/devices\/\d+\/light$/,
+    /^\/api\/devices\/\d+\/fan$/,
+    /^\/api\/devices\/\d+\/countdown$/,
+    /^\/api\/groups\/\d+\/toggle$/,    // toggle group state (guest-friendly)
+    /^\/api\/groups\/\d+\/light$/,     // light fan-out (guest-friendly)
+    /^\/api\/groups\/\d+\/countdown$/  // countdown fan-out (guest-friendly)
+  ];
+  if (guestPlayPatterns.some(re => re.test(pathname))) return 'guest-ok';
+
+  return 'admin-only';
+}
