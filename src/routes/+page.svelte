@@ -86,6 +86,10 @@
   };
 
   let tiles = $state<Tile[]>([]);
+  // Tiles with an in-flight position PATCH. A background invalidateAll() can
+  // re-load page data before that PATCH commits; without this guard rebuildTiles
+  // would revert the just-dragged tile to its old coordinates ("snap back").
+  let savingKeys = new Set<string>();
 
   // Spacer and line widgets are slim by design — let them go down to a single 40 px row.
   function minHForKind(kind?: string) {
@@ -93,25 +97,28 @@
   }
 
   function rebuildTiles() {
+    const prev = new Map(tiles.map(t => [`${t.type}:${t.id}`, t]));
     const ts: Tile[] = [];
     for (const d of data.devices) {
       if ((d.on_home ?? 1) !== 1) continue;
+      const keep = savingKeys.has(`device:${d.id}`) ? prev.get(`device:${d.id}`) : undefined;
       ts.push({
         type: 'device', id: d.id,
-        x: d.home_x ?? 0, y: d.home_y ?? 0,
-        w: Math.max(2, Math.min(COLS, d.home_width ?? 4)),
-        h: Math.max(2, d.home_height ?? 4),
+        x: keep ? keep.x : (d.home_x ?? 0), y: keep ? keep.y : (d.home_y ?? 0),
+        w: keep ? keep.w : Math.max(2, Math.min(COLS, d.home_width ?? 4)),
+        h: keep ? keep.h : Math.max(2, d.home_height ?? 4),
         device: d
       });
     }
     for (const w of data.widgets) {
       if (!w.on_home) continue;
       const minH = minHForKind(w.kind);
+      const keep = savingKeys.has(`widget:${w.id}`) ? prev.get(`widget:${w.id}`) : undefined;
       ts.push({
         type: 'widget', id: w.id,
-        x: w.home_x ?? 0, y: w.home_y ?? 0,
-        w: Math.max(2, Math.min(COLS, w.home_width ?? 4)),
-        h: Math.max(minH, w.home_height ?? Math.max(minH, 2)),
+        x: keep ? keep.x : (w.home_x ?? 0), y: keep ? keep.y : (w.home_y ?? 0),
+        w: keep ? keep.w : Math.max(2, Math.min(COLS, w.home_width ?? 4)),
+        h: keep ? keep.h : Math.max(minH, w.home_height ?? Math.max(minH, 2)),
         widget: w
       });
     }
@@ -187,13 +194,19 @@
   }
 
   async function persistPosition(t: Tile) {
+    const key = `${t.type}:${t.id}`;
+    savingKeys.add(key);
     const url = t.type === 'device' ? `/api/devices/${t.id}` : `/api/widgets/${t.id}`;
-    await fetch(url, {
-      method: 'PATCH', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        home_x: t.x, home_y: t.y, home_width: t.w, home_height: t.h
-      })
-    });
+    try {
+      await fetch(url, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          home_x: t.x, home_y: t.y, home_width: t.w, home_height: t.h
+        })
+      });
+    } finally {
+      savingKeys.delete(key);
+    }
   }
 
   async function resize(t: Tile, dw: number, dh: number) {

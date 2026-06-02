@@ -8,10 +8,32 @@ import { log } from './logger';
 
 let started = false;
 let pollRunning = new Set<number>();
+let taskRunning = false;       // single-flight guard: a slow tick must not overlap the next
 let lastPoll: Date | null = null;
 let lastTaskTick: Date | null = null;
 
 const GLOBAL_FLOOR_SECS = 30; // absolute lower bound (protects rate-limited devices from DoS)
+
+/**
+ * Delete history rows older than `days` from an append-only table, in batches
+ * to avoid long row locks. `days <= 0` (or blank setting) means "keep forever".
+ * table/column/extraWhere are hard-coded literals — never user input.
+ */
+async function prune(table: string, column: string, days: number, extraWhere = ''): Promise<void> {
+  if (!Number.isFinite(days) || days <= 0) return;
+  const cutoff = new Date(Date.now() - days * 86_400_000);
+  let total = 0;
+  for (let i = 0; i < 50; i++) {
+    const r = await exec(
+      `DELETE FROM ${table} WHERE ${column} < ?${extraWhere ? ' AND ' + extraWhere : ''} ORDER BY ${column} LIMIT 5000`,
+      [cutoff]
+    );
+    const n = Number((r as any).affectedRows ?? 0);
+    total += n;
+    if (n < 5000) break;
+  }
+  if (total) await log('info', 'scheduler', `retention: pruned ${total} rows from ${table}`);
+}
 
 export function startScheduler() {
   if (started) return;
@@ -77,11 +99,19 @@ export function startScheduler() {
   };
 
   const taskTick = async () => {
+    // A task's device commands can take longer than the 10s interval; without a
+    // guard the next tick would re-SELECT and re-execute still-'pending' rows
+    // (double switch / toggle flip-back). Single-process app → an in-flight flag
+    // is sufficient.
+    if (taskRunning) return;
+    taskRunning = true;
     try {
       await runDueScheduledTasks();
       lastTaskTick = new Date();
     } catch (e) {
       await log('error', 'scheduler', 'task tick failed', { err: String(e) });
+    } finally {
+      taskRunning = false;
     }
   };
 
@@ -90,11 +120,35 @@ export function startScheduler() {
     catch (e) { await log('error', 'scheduler', 'widget refresh failed', { err: String(e) }); }
   };
 
+  // Periodically prune append-only history tables so they don't grow forever.
+  // Retention windows are read from app_settings (default 30 days; 0 = keep forever).
+  const retentionTick = async () => {
+    try {
+      const getDays = async (k: string, def: number) => {
+        const r = await q<{ v: string }>(`SELECT v FROM app_settings WHERE k = ?`, [k]);
+        const n = Number(r[0]?.v);
+        return Number.isFinite(n) ? n : def;
+      };
+      const logDays = await getDays('log_retention_days', 30);
+      const readDays = await getDays('readings_retention_days', 30);
+      const runDays = await getDays('task_runs_retention_days', 30);
+      await prune('app_logs', 'created_at', logDays);
+      await prune('app_readings', 'created_at', readDays);
+      await prune('app_task_runs', 'ran_at', runDays);
+      // Repeating/vacation timers append a row per fire — prune long-finished ones too.
+      await prune('app_scheduled_tasks', 'created_at', runDays, "status IN ('done','failed','cancelled')");
+    } catch (e) {
+      await log('error', 'scheduler', 'retention sweep failed', { err: String(e) });
+    }
+  };
+
   // Initial poll after start (after 3 s) — acts as a "tick", so per-hub intervals are honoured.
   setTimeout(masterTick, 3_000);
   setInterval(masterTick, 10_000);
   setInterval(taskTick, 10_000);
   setInterval(widgetTick, 15_000);
+  setTimeout(retentionTick, 60_000);       // first sweep ~1 min after boot
+  setInterval(retentionTick, 3_600_000);   // then hourly
 }
 
 export function schedulerStatus() {

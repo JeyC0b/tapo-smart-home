@@ -96,6 +96,13 @@
     'error':   'text-rose-600 dark:text-rose-400'
   };
 
+  // Pixel size for the state icon, scaled to match the chosen value_size.
+  const ICON_PX: Record<string, number> = {
+    'xs': 14, 'sm': 16, 'md': 20, 'lg': 24, 'xl': 28,
+    '2xl': 32, '3xl': 36, '4xl': 44, '5xl': 56
+  };
+  function iconPx(k: string | undefined) { return ICON_PX[String(k || '3xl')] ?? 36; }
+
   function sz(k: string | undefined, fb: string) { return SIZE[String(k || fb)] || SIZE[fb]; }
   function alignTxt(k: string | undefined, fb = 'center') { return ALIGN_TXT[String(k || fb)] || ALIGN_TXT[fb]; }
   function alignItems(k: string | undefined, fb = 'center') { return ALIGN_ITEMS[String(k || fb)] || ALIGN_ITEMS[fb]; }
@@ -163,7 +170,7 @@
         <div class="flex items-center gap-2 {mainSize} {mainWeight} {mainColor} tabular-nums">
           {#if stateDisplay !== 'text'}
             <Icon name={d.state ? 'bolt' : 'power'}
-                  size={Math.max(20, parseInt(SIZE[String(cfg.value_size||'3xl')]?.match(/\d+/)?.[0] || '36'))}
+                  size={iconPx(cfg.value_size)}
                   class={d.state ? 'text-emerald-500' : 'text-slate-400'} />
           {/if}
           {#if stateDisplay !== 'icon'}
@@ -199,7 +206,7 @@
           <div class="flex items-center gap-2 {mainSize} {mainWeight} {mainColor} tabular-nums">
             {#if stateDisplay !== 'text'}
               <Icon name={renderAs === 'bulb' ? 'bulb' : 'plug'}
-                    size={Math.max(20, parseInt(SIZE[String(cfg.value_size||'3xl')]?.match(/\d+/)?.[0] || '36'))}
+                    size={iconPx(cfg.value_size)}
                     class={on ? (renderAs === 'bulb' ? 'text-amber-400' : 'text-emerald-500') : 'text-slate-400'} />
             {/if}
             {#if stateDisplay !== 'icon'}
@@ -225,7 +232,7 @@
           <div class="flex items-center gap-2 {mainSize} {mainWeight} {mainColor} tabular-nums">
             {#if stateDisplay !== 'text'}
               <Icon name={on ? 'bolt' : 'power'}
-                    size={Math.max(20, parseInt(SIZE[String(cfg.value_size||'3xl')]?.match(/\d+/)?.[0] || '36'))}
+                    size={iconPx(cfg.value_size)}
                     class={on ? 'text-emerald-500' : 'text-slate-400'} />
             {/if}
             <Icon name="layers" size={14} class="text-slate-400" />

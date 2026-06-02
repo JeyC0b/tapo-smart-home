@@ -2,6 +2,13 @@ import { json, error } from '@sveltejs/kit';
 import { q, exec } from '$lib/server/db';
 import { scheduleAt } from '$lib/server/tasks';
 
+// Enum columns must be validated on PATCH too (the POST/create route does);
+// otherwise a client can write an unknown action/status/repeat_kind that the
+// scheduler then mishandles (e.g. an unknown status orphans the row).
+const TIMER_ACTIONS = new Set(['on', 'off', 'toggle', 'on_for', 'off_for']);
+const TIMER_REPEATS = new Set(['once', 'minutely', 'hourly', 'daily', 'weekly', 'monthly']);
+const TIMER_STATUSES = new Set(['pending', 'done', 'failed', 'cancelled']);
+
 export async function PATCH({ params, request }: any) {
   const id = Number(params.id);
   const b = await request.json().catch(() => ({}));
@@ -18,8 +25,11 @@ export async function PATCH({ params, request }: any) {
   const args: any[] = [];
   for (const k of allowed) {
     if (k in b) {
-      sets.push(`${k} = ?`);
       let v = b[k];
+      if (k === 'action' && !TIMER_ACTIONS.has(v)) throw error(400, 'Invalid action.');
+      if (k === 'repeat_kind' && !TIMER_REPEATS.has(v)) throw error(400, 'Invalid repeat_kind.');
+      if (k === 'status' && !TIMER_STATUSES.has(v)) throw error(400, 'Invalid status.');
+      sets.push(`${k} = ?`);
       if (v === '') v = null;
       if (k === 'run_at' && v) v = new Date(v);
       if (k === 'repeat_until' && v) v = new Date(v);

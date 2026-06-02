@@ -233,6 +233,10 @@ INSERT IGNORE INTO app_settings (k,v) VALUES
   ('default_username',''),
   ('default_password',''),
   ('log_level','info'),
+  -- History retention windows in days (0 = keep forever); pruned hourly by the scheduler.
+  ('log_retention_days','30'),
+  ('readings_retention_days','30'),
+  ('task_runs_retention_days','30'),
   ('admin_password_hash',''),
   ('admin_password_salt','');
 

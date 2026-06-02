@@ -242,6 +242,11 @@ const TOGGLE_KINDS: ReadonlySet<ActionKind> = new Set(['on', 'off', 'toggle', 'o
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
+// Rules whose (detached) multi-step chain is still running. Prevents a new tick
+// from launching a second overlapping chain when the chain's waits outlast the
+// rule cooldown (which would interleave/contradict device commands).
+const runningChains = new Set<number>();
+
 /**
  * Run a chain of actions sequentially in a detached async context.
  * Errors in individual steps are logged but do NOT abort the chain.
@@ -326,7 +331,7 @@ export async function evaluateRules(): Promise<void> {
     arr.push(a);
     actsByRule.set(a.rule_id, arr);
   }
-  const deps = await q<DepRow>('SELECT * FROM app_dependencies WHERE enabled = 1');
+  const deps = await q<DepRow>('SELECT * FROM app_dependencies WHERE enabled = 1 ORDER BY id');
 
   const toggleVotes = new Map<number, {
     desired: 0 | 1; rule?: RuleRow; reasons: string[]; duration?: number;
@@ -347,6 +352,10 @@ export async function evaluateRules(): Promise<void> {
     // ---- v11: prefer multi-step action chain when present.
     const chain = actsByRule.get(r.id);
     if (chain && chain.length) {
+      // Single-flight: never start a second chain for a rule whose previous
+      // chain (possibly mid-`wait`) is still running.
+      if (runningChains.has(r.id)) continue;
+      runningChains.add(r.id);
       // Mark fired now (cooldown applies during the chain run).
       try {
         await exec(
@@ -357,9 +366,11 @@ export async function evaluateRules(): Promise<void> {
         await log('error', 'rules', `mark fired failed #${r.id}`, { err: String(e) });
       }
       // Detach so a long `wait` doesn't block other rules in this tick.
-      void runActionSequence(r, chain).catch(async (e) => {
-        await log('error', 'rules', `chain crashed #${r.id}`, { err: String(e) });
-      });
+      void runActionSequence(r, chain)
+        .catch(async (e) => {
+          await log('error', 'rules', `chain crashed #${r.id}`, { err: String(e) });
+        })
+        .finally(() => { runningChains.delete(r.id); });
       continue;
     }
 
@@ -395,10 +406,21 @@ export async function evaluateRules(): Promise<void> {
     const src = byId.get(d.source_device_id);
     if (!src || !src.online || src.state == null) continue;
     if (src.state !== d.source_state) continue;
-    toggleVotes.set(d.target_device_id, {
-      desired: d.required_state,
-      reasons: [`dep #${d.id} ${d.name}`],
-    });
+    // Dependencies are authoritative: they FORCE the target into required_state,
+    // overriding rule votes (e.g. safety interlocks). But preserve any existing
+    // vote entry so the rule that also targeted this device keeps its
+    // last_fired/cooldown bookkeeping, and append the reason instead of dropping it.
+    const cur = toggleVotes.get(d.target_device_id);
+    if (cur) {
+      cur.desired = d.required_state;
+      cur.duration = undefined; // a forced dependency has no auto-revert window
+      cur.reasons.push(`dep #${d.id} ${d.name}`);
+    } else {
+      toggleVotes.set(d.target_device_id, {
+        desired: d.required_state,
+        reasons: [`dep #${d.id} ${d.name}`],
+      });
+    }
   }
 
   for (const [tid, v] of toggleVotes) {

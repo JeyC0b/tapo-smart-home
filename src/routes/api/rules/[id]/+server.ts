@@ -13,7 +13,7 @@ const ALLOWED = new Set([
 
 export async function PATCH({ params, request }) {
   const id = Number(params.id);
-  const b = await request.json();
+  const b = await request.json().catch(() => ({}));
 
   const fields: string[] = []; const vals: any[] = [];
   for (const [k, v] of Object.entries(b)) {

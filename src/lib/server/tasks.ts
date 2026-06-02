@@ -47,7 +47,7 @@ export async function runDueScheduledTasks(): Promise<void> {
   );
   for (const t of due) {
     try {
-      await executeTask(t);
+      const switched = await executeTask(t);
       await exec(`UPDATE app_scheduled_tasks SET status='done', executed_at=NOW() WHERE id = ?`, [t.id]);
       await log('info', 'scheduler', `task #${t.id} executed (${t.action})`, { note: t.note });
 
@@ -66,19 +66,24 @@ export async function runDueScheduledTasks(): Promise<void> {
           t.vacation_min_duration_min +
           Math.floor(Math.random() * (t.vacation_max_duration_min - t.vacation_min_duration_min + 1));
       }
-      if (revertMin && revertMin > 0) {
+      if (revertMin && revertMin > 0 && switched.length) {
         const reverse: TimerAction = (t.action === 'off' || t.action === 'off_for') ? 'on' : 'off';
+        // Revert EXACTLY the devices that were switched (handles multi-device
+        // on_for/off_for and vacation pick-one), not just device_id (= first device).
         await scheduleAt(
-          t.device_id, reverse,
+          switched[0], reverse,
           new Date(Date.now() + revertMin * 60_000),
           `auto-revert (${reverse})`,
-          { parent_task_id: t.parent_task_id ?? t.id }
+          {
+            parent_task_id: t.parent_task_id ?? t.id,
+            device_ids: switched.length > 1 ? JSON.stringify(switched) : null
+          }
         );
       }
 
       // 2) If the timer repeats, create the next instance.
       if (t.repeat_kind !== 'once' || t.is_random) {
-        const next = nextRunAt(t);
+        const next = await nextRunAt(t);
         if (next && (!t.repeat_until || next <= new Date(t.repeat_until))) {
           await exec(
             `INSERT INTO app_scheduled_tasks
@@ -117,7 +122,8 @@ export async function runDueScheduledTasks(): Promise<void> {
   }
 }
 
-async function executeTask(t: ScheduledTaskRow) {
+/** Switches all devices for a task and returns the device IDs actually acted on. */
+async function executeTask(t: ScheduledTaskRow): Promise<number[]> {
   // Multi-device task carries a JSON device_ids list which replaces device_id.
   let deviceIds: number[] = [];
   if (t.device_ids) {
@@ -167,6 +173,7 @@ async function executeTask(t: ScheduledTaskRow) {
     }
   }
   if (errors.length) throw new Error(errors.join(' | '));
+  return deviceIds;
 }
 
 /** Schedule on/off in N seconds (countdown via the app, not the device). */
@@ -179,19 +186,19 @@ export async function scheduleIn(
 /** Schedule at a specific datetime (with optional parameters). */
 export async function scheduleAt(
   deviceId: number, action: TimerAction, runAt: Date, note?: string | null,
-  opts?: { parent_task_id?: number | null; title?: string | null }
+  opts?: { parent_task_id?: number | null; title?: string | null; device_ids?: string | null }
 ): Promise<number> {
   const r = await exec(
     `INSERT INTO app_scheduled_tasks
-       (device_id, action, run_at, note, title, parent_task_id)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [deviceId, action, runAt, note ?? null, opts?.title ?? null, opts?.parent_task_id ?? null]
+       (device_id, device_ids, action, run_at, note, title, parent_task_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [deviceId, opts?.device_ids ?? null, action, runAt, note ?? null, opts?.title ?? null, opts?.parent_task_id ?? null]
   );
   return (r as any).insertId;
 }
 
 /** Next run-time for repeating tasks. */
-export function nextRunAt(t: ScheduledTaskRow): Date | null {
+export async function nextRunAt(t: ScheduledTaskRow): Promise<Date | null> {
   const base = new Date(t.run_at);
   const interval = Math.max(1, Number(t.repeat_interval || 1));
 
@@ -226,45 +233,60 @@ export function nextRunAt(t: ScheduledTaskRow): Date | null {
 /**
  * Vacation/presence-simulation fire scheduler.
  * - Fires N times per day (between min_per_day..max_per_day, default 1..1).
- * - If we still owe more fires today, schedules the next at a random time
- *   between (now + GAP_MIN) and end-of-window. Otherwise jumps to tomorrow's window.
+ * - The per-day target is DETERMINISTIC for a given chain+day so it is not
+ *   re-rolled on every fire, and the number already fired today is read from
+ *   the DB — together these cap the day at exactly `target` fires (the old
+ *   code re-rolled and re-scheduled on every fire, producing dozens/day).
+ * - If we still owe fires today, schedules the next after a random gap of
+ *   random_min_minutes..random_max_minutes (clamped to the window end).
+ *   Otherwise jumps to the next allowed day.
  * - Day-of-week mask is respected.
  */
-function nextRandomFire(t: ScheduledTaskRow): Date | null {
-  const GAP_MIN = 8;          // minimum minutes between fires today
+async function nextRandomFire(t: ScheduledTaskRow): Promise<Date | null> {
+  // Spacing between consecutive same-day fires comes from the advanced
+  // random_min_minutes / random_max_minutes fields (fall back to 8..30 when
+  // unset so legacy rows keep sensible spacing).
+  const gapMin = Math.max(1, Number(t.random_min_minutes ?? 8));
+  const gapMax = Math.max(gapMin, Number(t.random_max_minutes ?? Math.max(gapMin, 30)));
   const min = Math.max(1, Number(t.vacation_min_per_day ?? 1));
   const max = Math.max(min, Number(t.vacation_max_per_day ?? min));
-  const targetToday = min + Math.floor(Math.random() * (max - min + 1));
 
-  // How many times has this task already fired today?
-  // We piggy-back on the parent_task_id chain: the runtime metric here is
-  // best-effort (fire count by created_at = today, status = done, same parent).
-  // Caller passes synchronous data so use a heuristic: if we already fired
-  // today (executed_at today) and remaining fires > 0, schedule another.
   const now = new Date();
-  const today = new Date(now); today.setHours(0,0,0,0);
-  const wEnd = parseHHMM(today, t.random_window_end!);
-  let endToday = wEnd;
-  // Window crossing midnight: extend end to next day if needed.
-  const wStart = parseHHMM(today, t.random_window_start!);
-  if (endToday <= wStart) endToday = new Date(endToday.getTime() + 24*60*60*1000);
-
-  // Decide: is it still worth firing again today?
-  // We check executed_at proximity: if last fire was within window and there's
-  // ≥ GAP_MIN minutes left, try again today. We don't track exact count without
-  // an extra query, so we approximate via "min(targetToday, attempts) until end".
-  const minutesRemaining = (endToday.getTime() - now.getTime()) / 60000;
-  if (targetToday > 1 && minutesRemaining >= GAP_MIN + 1) {
-    const earliest = new Date(now.getTime() + GAP_MIN * 60000);
-    const span = endToday.getTime() - earliest.getTime();
-    if (span > 0) {
-      // Roughly distribute remaining fires: pick uniformly in the remainder.
-      const fire = new Date(earliest.getTime() + Math.floor(Math.random() * span));
-      if (isAllowedDay(fire, t.days_mask)) return fire;
+  const today = new Date(now); today.setHours(0, 0, 0, 0);
+  let wStart = parseHHMM(today, t.random_window_start!);
+  let endToday = parseHHMM(today, t.random_window_end!);
+  if (endToday <= wStart) {
+    // Window crosses midnight: extend the end to the next day.
+    endToday = new Date(endToday.getTime() + 24 * 60 * 60 * 1000);
+    // If we're past midnight but before today's start, we're still inside the
+    // window that opened yesterday — shift the counting window back one day so
+    // the after-midnight fires are counted (otherwise the cap is defeated).
+    if (now < wStart) {
+      wStart = new Date(wStart.getTime() - 24 * 60 * 60 * 1000);
+      endToday = new Date(endToday.getTime() - 24 * 60 * 60 * 1000);
     }
   }
 
-  // Otherwise: first fire of next allowed day.
+  // Deterministic per-(chain, window-day) target so it stays stable for the
+  // whole session, including overnight windows that span two calendar days.
+  const windowDay = new Date(wStart); windowDay.setHours(0, 0, 0, 0);
+  const parentId = t.parent_task_id ?? t.id;
+  const target = min + (dayTargetHash(parentId, windowDay) % (max - min + 1));
+
+  // Actual presence fires already completed in this window for this chain. Filter
+  // by the chain's own action so the auto-revert (opposite action) is NOT counted
+  // — otherwise each 'on' + its 'off' revert would count as two, halving the rate.
+  const firedToday = await firesToday(parentId, t.action, wStart, endToday);
+
+  const minutesRemaining = (endToday.getTime() - now.getTime()) / 60000;
+  if (firedToday < target && minutesRemaining >= gapMin + 1 && isAllowedDay(now, t.days_mask)) {
+    // Fire after a random gap of [gapMin, gapMax] minutes, clamped to window end.
+    const gap = gapMin + Math.floor(Math.random() * (gapMax - gapMin + 1));
+    const fire = new Date(now.getTime() + gap * 60000);
+    return fire > endToday ? endToday : fire;
+  }
+
+  // Otherwise: first fire of the next allowed day.
   const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
   for (let i = 0; i < 14; i++) {
     const day = new Date(tomorrow); day.setDate(day.getDate() + i);
@@ -273,6 +295,29 @@ function nextRandomFire(t: ScheduledTaskRow): Date | null {
     }
   }
   return null;
+}
+
+/** Stable non-negative pseudo-random value for a (chain, calendar-day) pair. */
+function dayTargetHash(parentId: number, day: Date): number {
+  const key = (parentId * 100000)
+    + (day.getFullYear() * 10000) + ((day.getMonth() + 1) * 100) + day.getDate();
+  let h = (key ^ 0x9e3779b1) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
+  return (h ^ (h >>> 16)) >>> 0;
+}
+
+/** Count completed fires of a vacation chain (of the given action) within a window. */
+async function firesToday(parentId: number, action: string, from: Date, to: Date): Promise<number> {
+  const rows = await q<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM app_scheduled_tasks
+      WHERE (id = ? OR parent_task_id = ?)
+        AND action = ?
+        AND status = 'done'
+        AND executed_at >= ? AND executed_at <= ?`,
+    [parentId, parentId, action, from, to]
+  );
+  return Number(rows[0]?.c ?? 0);
 }
 
 function parseHHMM(day: Date, hhmm: string): Date {

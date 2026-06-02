@@ -1,39 +1,25 @@
 import { json, error } from '@sveltejs/kit';
+import { assertPublicUrl, safeFetch } from '$lib/server/net_guard';
 
 /**
  * Proxy pro HTTP widgety: GET ?url=...&json_path=a.b.c
  * Server-side fetch bypasses CORS and lets you pick a value from JSON.
- * Security: blocks localhost / private ranges (SSRF guard) — if an admin
- * deliberately wants an internal URL, add it to ALLOWED_HOSTS_PRIVATE below.
+ * Security: the SSRF guard (net_guard) resolves DNS and blocks loopback /
+ * private / link-local / ULA / CGNAT addresses, dotless-decimal and
+ * IPv4-mapped forms, and re-validates redirect hops.
  */
-const PRIVATE_RANGES = [
-  /^127\./, /^10\./, /^192\.168\./, /^172\.(1[6-9]|2\d|3[01])\./,
-  /^169\.254\./, /^::1$/, /^fc/, /^fd/
-];
-
-export async function GET({ url, fetch }: any) {
+export async function GET({ url }: any) {
   const target = url.searchParams.get('url');
   const jsonPath = url.searchParams.get('json_path') || '';
   if (!target) throw error(400, 'url required');
 
-  let parsed: URL;
-  try { parsed = new URL(target); } catch { throw error(400, 'Invalid URL.'); }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw error(400, 'Only http(s) is allowed.');
-  }
-  // SSRF: block IP literals in private ranges.
-  const host = parsed.hostname;
-  if (/^[\d.]+$/.test(host) || /^[\da-f:]+$/i.test(host)) {
-    if (PRIVATE_RANGES.some(re => re.test(host))) {
-      throw error(400, 'Private/loopback addresses are not allowed.');
-    }
-  } else if (host === 'localhost') {
-    throw error(400, 'localhost is not allowed.');
-  }
+  // Validate scheme + resolve/verify host (throws on private/loopback).
+  try { await assertPublicUrl(target); }
+  catch (e: any) { throw error(400, String(e?.message || e)); }
 
   let r: Response;
   try {
-    r = await fetch(target, { headers: { 'user-agent': 'tapo-widget/1.0' } });
+    r = await safeFetch(target, { headers: { 'user-agent': 'tapo-widget/1.0' } });
   } catch (e: any) {
     return json({ ok: false, error: String(e.message || e) }, { status: 200 });
   }

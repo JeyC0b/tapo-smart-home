@@ -214,7 +214,11 @@
         body.vacation_dim_chance = Math.min(100, Math.max(0, Number(f.vacation_dim_chance) || 0));
         if (body.repeat_kind === 'once') body.repeat_kind = 'daily';
       } else {
-        body.run_at = new Date(f.run_at).toISOString();
+        // Guard against an empty/cleared datetime-local: new Date('').toISOString()
+        // throws RangeError, which (with no catch) silently aborted the submit.
+        const at = new Date(f.run_at);
+        if (isNaN(at.getTime())) { alert(tr('timers.invalid_time')); return; }
+        body.run_at = at.toISOString();
       }
       const url = isEdit ? `/api/timers/${f.id}` : '/api/timers';
       const r = await fetch(url, {
@@ -491,13 +495,14 @@
         </div>
         <details class="text-xs text-slate-500">
           <summary class="cursor-pointer">{$t('timers.advanced')}</summary>
+          <div class="mt-2 text-[11px] text-slate-400">{$t('timers.gap_hint')}</div>
           <div class="mt-2 grid gap-3 sm:grid-cols-2">
             <div>
-              <div class="label">random_min_minutes</div>
+              <div class="label">{$t('timers.gap_min')}</div>
               <input class="input" type="number" min="1" bind:value={f.random_min_minutes}/>
             </div>
             <div>
-              <div class="label">random_max_minutes</div>
+              <div class="label">{$t('timers.gap_max')}</div>
               <input class="input" type="number" min="1" bind:value={f.random_max_minutes}/>
             </div>
           </div>

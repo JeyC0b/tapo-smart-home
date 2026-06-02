@@ -11,9 +11,13 @@
   // `untrack` prevents the state_referenced_locally warning — read initial value only.
   let theme = $state<'light' | 'dark'>(untrack(() => (data?.theme ?? 'dark')));
 
-  // Hydrate the i18n store with the language resolved on the server (cookie
-  // first, otherwise the installation default). Re-runs on `data.lang` change
-  // (e.g. after the language switcher in /settings persists a new value).
+  // Apply the server-resolved language (cookie → installation default)
+  // SYNCHRONOUSLY so the SSR markup is rendered in the correct language. An
+  // $effect alone runs only after hydration, which caused a flash of English on
+  // every full load for Czech users. (SvelteKit renders SSR synchronously, so
+  // setting the module store here is safe for this single-user app.)
+  setLang((data?.lang ?? 'en') as LangCode);
+  // Keep following later changes (e.g. the /settings switcher + invalidateAll).
   $effect(() => { setLang((data?.lang ?? 'en') as LangCode); });
 
   // Auth state is read-only from layout.server (refreshed after every F5/invalidate).
@@ -96,7 +100,7 @@
   <header class="sticky top-0 z-30 border-b border-slate-200 bg-white/80 backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
     <div class="flex items-center justify-between px-4 py-3">
       <a href="/" class="flex items-center gap-2 text-lg font-bold tracking-tight text-slate-900 dark:text-slate-50">
-        <Icon name="flame" size={22} class="text-orange-500" /> Tapo
+        <Icon name="smarthome" size={22} class="text-brand-600 dark:text-brand-500" /> Tapo
       </a>
       <div class="flex items-center gap-1">
         <nav class="hidden gap-1 md:flex">
@@ -184,9 +188,9 @@
         </p>
       {/if}
       <div>
-        <div class="label">{$t('auth.password')} (min. 4)</div>
+        <div class="label">{$t('auth.password')}{setupMode ? ' (min. 8)' : ''}</div>
         <input type="password" class="input" autocomplete={setupMode ? 'new-password' : 'current-password'}
-               bind:value={loginPwd} bind:this={loginInput} required minlength="4"/>
+               bind:value={loginPwd} bind:this={loginInput} required minlength={setupMode ? 8 : 1}/>
       </div>
       {#if loginErr}
         <div class="rounded-md border border-rose-300 bg-rose-50 p-2 text-sm text-rose-700 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-200">

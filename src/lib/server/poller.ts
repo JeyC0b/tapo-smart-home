@@ -60,11 +60,14 @@ async function pollHub(h: HubRow, offlineAfter: number) {
   try {
     s = await statusOf({ ip: h.ip, username: h.username, password: h.password });
   } catch (e) {
-    // Sticky offline: increment fail_count but do not flip online=0 immediately
+    // Sticky offline: increment fail_count but do not flip online=0 immediately.
+    // MySQL evaluates SET assignments left-to-right, so the CASE sees the ALREADY
+    // incremented fail_count — compare it directly (the old `fail_count + 1 >= ?`
+    // double-counted and flipped devices offline one cycle too early).
     await exec(
       `UPDATE app_devices
          SET fail_count = fail_count + 1,
-             online = CASE WHEN fail_count + 1 >= ? THEN 0 ELSE online END
+             online = CASE WHEN fail_count >= ? THEN 0 ELSE online END
          WHERE hub_id = ?`,
       [offlineAfter, h.id]
     );
@@ -189,6 +192,9 @@ export async function commandLight(deviceId: number, params: LightArgs): Promise
   if (params.brightness != null) { upd.push('brightness = ?'); vals.push(params.brightness); }
   if (params.hsv) { upd.push('hsv = ?'); vals.push(params.hsv.join(',')); }
   if (params.color_temp != null) { upd.push('color_temp = ?'); vals.push(params.color_temp); }
+  // The bridge auto-turns-on an off bulb before applying light params; reflect
+  // that in cached state so the UI doesn't show OFF until the next poll.
+  if (r.applied?.auto_on) { upd.push('state = ?'); vals.push(1); }
   if (upd.length) { vals.push(deviceId); await exec(`UPDATE app_devices SET ${upd.join(', ')} WHERE id = ?`, vals); }
   await log('info', 'cmd', `${nameOf(d)} light`, params as any);
 }
@@ -197,7 +203,10 @@ export async function commandFan(deviceId: number, speed: number): Promise<void>
   const d = await loadDeviceWithHub(deviceId);
   const r = await setFan({ ip: d.hub_ip, username: d.hub_user, password: d.hub_pass }, d.device_id, speed);
   if (!r.ok) throw new Error(r.error || 'fan failed');
-  await exec('UPDATE app_devices SET fan_speed = ? WHERE id = ?', [speed, deviceId]);
+  // Setting the fan speed also drives device_on (speed 0 = off, 1–4 = on), so
+  // reflect that in the cached state — otherwise the on/off toggle shows the
+  // wrong value until the next poll.
+  await exec('UPDATE app_devices SET fan_speed = ?, state = ? WHERE id = ?', [speed, speed > 0 ? 1 : 0, deviceId]);
   await log('info', 'cmd', `${nameOf(d)} fan = ${speed}`);
 }
 

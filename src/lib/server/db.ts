@@ -30,3 +30,24 @@ export async function exec(sql: string, params: any[] = []): Promise<mysql.Resul
   const [r] = await db().execute(sql, params);
   return r as mysql.ResultSetHeader;
 }
+
+/**
+ * Run `fn` inside a single transaction on a dedicated connection. Commits on
+ * success, rolls back on any throw. Use for multi-statement bulk writes
+ * (reorder, positions, group-member replace) so a mid-loop failure cannot
+ * leave the data half-applied.
+ */
+export async function tx<T>(fn: (c: mysql.PoolConnection) => Promise<T>): Promise<T> {
+  const c = await db().getConnection();
+  try {
+    await c.beginTransaction();
+    const r = await fn(c);
+    await c.commit();
+    return r;
+  } catch (e) {
+    try { await c.rollback(); } catch { /* ignore rollback error */ }
+    throw e;
+  } finally {
+    c.release();
+  }
+}

@@ -1,13 +1,25 @@
-import type { Handle } from '@sveltejs/kit';
+import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { json } from '@sveltejs/kit';
 import { startScheduler } from '$lib/server/scheduler';
 import {
   AUTH_COOKIE_NAME, isAdminPasswordSet, isMutationAllowedPath, isValidSession
 } from '$lib/server/auth';
 import { q } from '$lib/server/db';
+import { log } from '$lib/server/logger';
 
 // Start the background scheduler once at server boot.
 startScheduler();
+
+// Safety net for UNEXPECTED errors (those not thrown via `error()`): log the
+// real cause server-side and return a generic message so internals/stack traces
+// never reach the client. Errors thrown via `error(status, msg)` are unaffected.
+export const handleError: HandleServerError = ({ error: err, event, status, message }) => {
+  if (status !== 404) {
+    log('error', 'http', `Unhandled error on ${event.url.pathname}`, { err: String(err) })
+      .catch(() => {});
+  }
+  return { message: status === 404 ? message : 'Internal server error.' };
+};
 
 export const handle: Handle = async ({ event, resolve }) => {
   // Determine whether the request is authenticated as admin.
