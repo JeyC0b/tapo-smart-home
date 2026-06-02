@@ -52,8 +52,12 @@ from kasa.device_factory import _connect as _kasa_connect, get_protocol  # noqa:
 # ---------------------------------------------------------------- helpers
 
 def _credentials(args) -> Credentials | None:
-    if getattr(args, "user", None) and getattr(args, "password", None):
-        return Credentials(args.user, args.password)
+    # Prefer env vars (KASA_USER/KASA_PASS) so credentials are not exposed on the
+    # process command line; fall back to --user/--password for manual debugging.
+    user = getattr(args, "user", None) or os.environ.get("KASA_USER")
+    password = getattr(args, "password", None) or os.environ.get("KASA_PASS")
+    if user and password:
+        return Credentials(user, password)
     return None
 
 
@@ -176,6 +180,11 @@ def _device_kind(dev: Device, is_child: bool = False) -> str:
         return "bulb"
     if "bulb" in dt or "light" in dt or any(h in model for h in _LIGHT_HINTS):
         return "bulb"
+    # IoT wall dimmers (KS220/HS220) report DeviceType.Dimmer and expose
+    # brightness through the IoT "Light"/"dimmer" module (not a SMART Brightness
+    # module), so they miss the checks above. Treat them as dimmable.
+    if "dimmer" in dt or "dimmer" in mods:
+        return "bulb"
     if "fan" in dt or "Fan" in mods:
         return "fan"
     if "strip" in dt:
@@ -211,6 +220,18 @@ def _capabilities(dev: Device) -> dict[str, Any]:
         m = mods["ColorTemperature"]
         rng = _safe(lambda: m.valid_temperature_range)
         caps["color_temp"] = {"range": list(rng) if rng else None}
+    # IoT (Kasa) bulbs/dimmers/strips expose brightness/color/color_temp via a
+    # single "Light" module instead of the SMART Brightness/Color/ColorTemperature
+    # modules. Surface those capabilities from the device's feature ids so the UI
+    # shows the controls. (SMART devices keep the branches above and skip this.)
+    if "Light" in mods and not ("Brightness" in mods or "Color" in mods or "ColorTemperature" in mods):
+        if "brightness" in feats:
+            caps["brightness"] = True
+        if "hsv" in feats:
+            caps["color"] = True
+        if "color_temperature" in feats:
+            rng = _safe(lambda: list(mods["Light"].valid_temperature_range))
+            caps["color_temp"] = {"range": rng if rng else None}
     if "LightEffect" in mods:
         m = mods["LightEffect"]
         caps["light_effect"] = {
@@ -231,7 +252,8 @@ def _capabilities(dev: Device) -> dict[str, Any]:
         caps["countdown_native"] = True
     if "BatterySensor" in mods:
         caps["battery"] = True
-    if "MotionSensor" in mods:
+    # SMART motion is keyed "MotionSensor"; IoT PIR switches/dimmers key it "motion".
+    if "MotionSensor" in mods or "motion" in mods:
         caps["motion"] = True
     if "ContactSensor" in mods:
         caps["contact"] = True
@@ -250,6 +272,12 @@ def _serialize(dev: Device, parent_id: str | None = None) -> dict[str, Any]:
     temperature = _safe(lambda: mods["TemperatureSensor"].temperature) if "TemperatureSensor" in mods else None
     if temperature is None:
         temperature = info.get("Temperature") or info.get("Current Temperature")
+    # The raw reading follows the sensor's configured unit; the app/UI assume °C,
+    # so normalize a Fahrenheit-configured T31x to Celsius.
+    if temperature is not None and "TemperatureSensor" in mods:
+        unit = _safe(lambda: mods["TemperatureSensor"].temperature_unit)
+        if unit and str(unit).lower().startswith("fahren"):
+            temperature = (float(temperature) - 32) * 5 / 9
     humidity = _safe(lambda: mods["HumiditySensor"].humidity) if "HumiditySensor" in mods else None
     if humidity is None:
         humidity = info.get("Humidity") or info.get("Current Humidity")
@@ -261,13 +289,34 @@ def _serialize(dev: Device, parent_id: str | None = None) -> dict[str, Any]:
             state = 1 if v else 0 if v is not None else None
         except Exception:
             state = None
+    # Binary sensors carry their live status in a dedicated module, NOT in
+    # device_on (is_on is always False for them). Map open/leak into `state` so
+    # the existing UI (open/closed, leak/dry) and state-metric rules read reality.
+    if "ContactSensor" in mods:
+        ov = _safe(lambda: mods["ContactSensor"].is_open)
+        if ov is not None:
+            state = 1 if ov else 0
+    if "WaterleakSensor" in mods:
+        lv = _safe(lambda: mods["WaterleakSensor"].alert)
+        if lv is not None:
+            state = 1 if lv else 0
 
     brightness = _safe(lambda: mods["Brightness"].brightness) if "Brightness" in mods else None
     hsv = _safe(lambda: list(mods["Color"].hsv)) if "Color" in mods else None
     color_temp = _safe(lambda: mods["ColorTemperature"].color_temp) if "ColorTemperature" in mods else None
+    # IoT lights expose these via the single "Light" module (see _capabilities).
+    if "Light" in mods:
+        if brightness is None:
+            brightness = _safe(lambda: mods["Light"].brightness)
+        if hsv is None:
+            hsv = _safe(lambda: list(mods["Light"].hsv))
+        if color_temp is None:
+            color_temp = _safe(lambda: mods["Light"].color_temp)
     fan_speed = _safe(lambda: mods["Fan"].fan_speed_level) if "Fan" in mods else None
     battery = _safe(lambda: mods["BatterySensor"].battery) if "BatterySensor" in mods else None
     motion = _safe(lambda: mods["MotionSensor"].motion_detected) if "MotionSensor" in mods else None
+    if motion is None and "motion" in mods:
+        motion = _safe(lambda: mods["motion"].pir_triggered)
 
     energy = None
     if "Energy" in mods:
@@ -656,15 +705,36 @@ async def cmd_set(args):
 
     verified = None
     actual = None
+    attempts = 0
     if args.verify and not momentary:
-        await asyncio.sleep(1.5)
-        try:
-            await dev.update()
-            t2 = _find_node(dev, args.device_id)
-            actual = (1 if bool(getattr(t2, "is_on", False)) else 0) if t2 else None
-            verified = (actual == (1 if desired else 0))
-        except Exception:
-            verified = False
+        desired_int = 1 if desired else 0
+        # A SMART device whose get_device_info omits `device_on` has no real
+        # toggle-state surface — is_on is a constant False — so verifying would
+        # always "fail" after all 5 retries (~5s wasted) and wrongly raise. Skip
+        # verification for those (best-effort), like momentary devices.
+        sinfo = getattr(target, "_info", None)
+        if sinfo is not None and "device_on" not in sinfo:
+            verified = None
+        else:
+            # `is_on` resolves to `_info["device_on"]`, which for a hub child is
+            # refreshed by the PARENT's get_child_device_list on dev.update().
+            # Some devices (notably the S210 wall switch behind a hub) keep
+            # reporting the OLD device_on for a few seconds after the relay has
+            # already switched, so a single fixed wait + read returns a stale
+            # value and the toggle is wrongly flagged as "failed to verify".
+            # Poll-verify with backoff: re-update the whole tree several times and
+            # accept as soon as the reported state matches what we requested.
+            for attempts in range(1, 6):
+                await asyncio.sleep(0.8 if attempts == 1 else 1.1)
+                try:
+                    await dev.update()
+                    t2 = _find_node(dev, args.device_id)
+                    actual = (1 if bool(getattr(t2, "is_on", False)) else 0) if t2 else None
+                except Exception:
+                    actual = None
+                if actual == desired_int:
+                    break
+            verified = (actual == desired_int)
 
     return {
         "ok": True,
@@ -672,6 +742,7 @@ async def cmd_set(args):
         "requested": 1 if desired else 0,
         "actual": actual,
         "verified": verified,
+        "verify_attempts": attempts,
         "is_momentary": momentary,
     }
 
@@ -695,21 +766,34 @@ async def cmd_light(args):
             except Exception:
                 pass
 
+    # IoT (Kasa) lights route brightness/hsv/color_temp through the single "Light"
+    # module; SMART lights use the dedicated modules. Prefer the SMART module when
+    # present, else fall back to "Light" (same method names).
+    light_mod = mods.get("Light")
     if args.brightness is not None:
-        if "Brightness" not in mods:
+        if "Brightness" in mods:
+            await mods["Brightness"].set_brightness(int(args.brightness))
+        elif light_mod is not None:
+            await light_mod.set_brightness(int(args.brightness))
+        else:
             return {"ok": False, "error": "no Brightness module"}
-        await mods["Brightness"].set_brightness(int(args.brightness))
         applied["brightness"] = int(args.brightness)
     if args.hsv is not None:
-        if "Color" not in mods:
-            return {"ok": False, "error": "no Color module"}
         h, s, v = (int(x) for x in args.hsv.split(","))
-        await mods["Color"].set_hsv(h, s, v)
+        if "Color" in mods:
+            await mods["Color"].set_hsv(h, s, v)
+        elif light_mod is not None:
+            await light_mod.set_hsv(h, s, v)
+        else:
+            return {"ok": False, "error": "no Color module"}
         applied["hsv"] = [h, s, v]
     if args.color_temp is not None:
-        if "ColorTemperature" not in mods:
+        if "ColorTemperature" in mods:
+            await mods["ColorTemperature"].set_color_temp(int(args.color_temp))
+        elif light_mod is not None:
+            await light_mod.set_color_temp(int(args.color_temp))
+        else:
             return {"ok": False, "error": "no ColorTemperature module"}
-        await mods["ColorTemperature"].set_color_temp(int(args.color_temp))
         applied["color_temp"] = int(args.color_temp)
     if args.effect is not None:
         if "LightEffect" not in mods:
@@ -822,15 +906,17 @@ def main():
 
     def add_conn(sp):
         sp.add_argument("--ip", required=True)
-        sp.add_argument("--user", required=True)
-        sp.add_argument("--password", required=True)
+        # Credentials come from KASA_USER/KASA_PASS env vars by default (the Node
+        # bridge passes them that way); --user/--password remain for manual use.
+        sp.add_argument("--user", default=None)
+        sp.add_argument("--password", default=None)
 
     sp = sub.add_parser("status"); add_conn(sp)
     sp = sub.add_parser("discover"); add_conn(sp)
 
     sp = sub.add_parser("discover-network")
-    sp.add_argument("--user", required=True)
-    sp.add_argument("--password", required=True)
+    sp.add_argument("--user", default=None)
+    sp.add_argument("--password", default=None)
     sp.add_argument("--target", default="255.255.255.255")
     sp.add_argument("--timeout", type=int, default=8)
     sp.add_argument("--exclude-ip", dest="exclude_ip", default="",

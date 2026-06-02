@@ -33,7 +33,7 @@ const NUM_OR_NULL = (v: any) => (v === '' || v == null ? null : Number(v));
 const STR_OR_NULL = (v: any) => (v === '' || v == null ? null : String(v));
 
 export async function POST({ request }) {
-  const b = await request.json();
+  const b = await request.json().catch(() => ({}));
   if (!b.name) throw error(400, 'name required');
 
   const trigger = b.trigger_type || 'sensor';

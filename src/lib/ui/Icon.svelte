@@ -7,7 +7,7 @@
     | 'eye' | 'eye-off' | 'arrow-up' | 'arrow-down' | 'check' | 'x'
     | 'bulb' | 'plug' | 'switch' | 'fan' | 'strip' | 'button' | 'hub'
     | 'thermometer' | 'droplet' | 'door' | 'motion' | 'water'
-    | 'flame' | 'search' | 'wifi' | 'wifi-off' | 'battery' | 'bolt'
+    | 'flame' | 'smarthome' | 'search' | 'wifi' | 'wifi-off' | 'battery' | 'bolt'
     | 'play' | 'pause' | 'globe' | 'lock' | 'palette' | 'sparkles'
     | 'chevron-down' | 'chevron-right' | 'chevron-up' | 'chevron-left' | 'grip-resize'
     | 'menu' | 'alert' | 'info' | 'copy' | 'power' | 'layers';
@@ -82,6 +82,9 @@
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width={strokeWidth} stroke-linecap="round" stroke-linejoin="round" width={size} height={size} class={cls} aria-hidden="true"><path d="M2 18c1.5-1 3-1 4.5 0s3 1 4.5 0 3-1 4.5 0 3 1 4.5 0"/><path d="M2 13c1.5-1 3-1 4.5 0s3 1 4.5 0 3-1 4.5 0 3 1 4.5 0"/><path d="M12 3l3 5h-6z"/></svg>
 {:else if name === 'flame'}
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width={strokeWidth} stroke-linecap="round" stroke-linejoin="round" width={size} height={size} class={cls} aria-hidden="true"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 17a7 7 0 0 0 7-7c0-1.5-.5-3-1.5-4-2 .5-3.5-.5-4-3-3 1-5 4-5 7 0 1.5.5 2.5 1 3.5z"/></svg>
+{:else if name === 'smarthome'}
+  <!-- House with a wifi/connectivity signal inside — the app's smart-home brand mark. -->
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width={strokeWidth} stroke-linecap="round" stroke-linejoin="round" width={size} height={size} class={cls} aria-hidden="true"><path d="M3 11l9-8 9 8"/><path d="M5 10.5V20h14v-9.5"/><path d="M9.4 15.3a3.6 3.6 0 0 1 5.2 0"/><path d="M11 17.3a1.6 1.6 0 0 1 2 0"/><path d="M12 18.9h.01"/></svg>
 {:else if name === 'search'}
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width={strokeWidth} stroke-linecap="round" stroke-linejoin="round" width={size} height={size} class={cls} aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
 {:else if name === 'wifi'}

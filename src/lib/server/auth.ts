@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual, scryptSync } from 'node:crypto';
 import { q, exec } from './db';
 import { getSetting, setSetting } from './settings';
 import { log } from './logger';
@@ -6,8 +6,19 @@ import { log } from './logger';
 const COOKIE_NAME = 'tapo_admin';
 const SESSION_TTL_DAYS = 30;
 
+// Password storage uses scrypt (a slow, memory-hard KDF from the Node stdlib —
+// no extra dependency). Stored hashes are tagged `scrypt$<hex>` so legacy
+// fast-SHA-256 hashes (bare hex) can be detected and transparently upgraded on
+// the next successful login.
+const SCRYPT_PREFIX = 'scrypt$';
+const SCRYPT_KEYLEN = 64;
+const MIN_PASSWORD_LEN = 8;
+
 function sha256(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex');
+}
+function scryptHash(plain: string, salt: string): string {
+  return SCRYPT_PREFIX + scryptSync(plain, salt, SCRYPT_KEYLEN).toString('hex');
 }
 
 /** True when no admin password has ever been set — initial state, everything visible. */
@@ -17,11 +28,12 @@ export async function isAdminPasswordSet(): Promise<boolean> {
 }
 
 export async function setAdminPassword(plain: string): Promise<void> {
-  if (!plain || plain.length < 4) throw new Error('Password must be at least 4 characters long.');
+  if (!plain || plain.length < MIN_PASSWORD_LEN) {
+    throw new Error(`Password must be at least ${MIN_PASSWORD_LEN} characters long.`);
+  }
   const salt = randomBytes(16).toString('hex');
-  const hash = sha256(salt + ':' + plain);
   await setSetting('admin_password_salt', salt);
-  await setSetting('admin_password_hash', hash);
+  await setSetting('admin_password_hash', scryptHash(plain, salt));
   // Drop all existing sessions — password has changed.
   await exec('DELETE FROM app_admin_sessions');
 }
@@ -34,15 +46,21 @@ export async function clearAdminPassword(): Promise<void> {
 
 export async function verifyAdminPassword(plain: string): Promise<boolean> {
   const salt = await getSetting('admin_password_salt', '');
-  const hash = await getSetting('admin_password_hash', '');
-  if (!salt || !hash) return false;
-  const calc = sha256(salt + ':' + plain);
-  // constant-time compare
+  const stored = await getSetting('admin_password_hash', '');
+  if (!salt || !stored) return false;
   try {
-    const a = Buffer.from(calc, 'hex');
-    const b = Buffer.from(hash, 'hex');
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(a, b);
+    if (stored.startsWith(SCRYPT_PREFIX)) {
+      const calc = scryptSync(plain, salt, SCRYPT_KEYLEN);
+      const expected = Buffer.from(stored.slice(SCRYPT_PREFIX.length), 'hex');
+      if (calc.length !== expected.length) return false;
+      return timingSafeEqual(calc, expected);
+    }
+    // Legacy fast-SHA-256 hash: verify in constant time, then upgrade to scrypt.
+    const legacy = Buffer.from(sha256(salt + ':' + plain), 'hex');
+    const b = Buffer.from(stored, 'hex');
+    if (legacy.length !== b.length || !timingSafeEqual(legacy, b)) return false;
+    setSetting('admin_password_hash', scryptHash(plain, salt)).catch(() => {});
+    return true;
   } catch { return false; }
 }
 

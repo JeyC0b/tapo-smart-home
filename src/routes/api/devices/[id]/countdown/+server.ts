@@ -1,6 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { commandNativeCountdown } from '$lib/server/poller';
 import { scheduleIn } from '$lib/server/tasks';
+import { deviceError } from '$lib/server/api_error';
 
 /**
  * Body: { seconds: number, action: 'on'|'off'|'toggle', native?: boolean }
@@ -10,7 +11,8 @@ import { scheduleIn } from '$lib/server/tasks';
  */
 export async function POST({ params, request }) {
   const id = Number(params.id);
-  const b = await request.json();
+  if (!Number.isFinite(id)) throw error(400, 'invalid device id');
+  const b = await request.json().catch(() => ({}));
   if (typeof b.seconds !== 'number' || b.seconds <= 0) throw error(400, 'seconds:>0');
   if (!['on','off','toggle'].includes(b.action)) throw error(400, 'action: on|off|toggle');
 
@@ -22,6 +24,6 @@ export async function POST({ params, request }) {
     const taskId = await scheduleIn(id, b.seconds, b.action, `countdown ${b.action} ${b.seconds}s`);
     return json({ ok: true, mode: 'app', task_id: taskId });
   } catch (e: any) {
-    throw error(500, e.message);
+    await deviceError(e, 'countdown');
   }
 }

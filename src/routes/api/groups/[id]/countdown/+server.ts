@@ -1,22 +1,30 @@
 import { json, error } from '@sveltejs/kit';
 import { q } from '$lib/server/db';
 import { scheduleIn } from '$lib/server/tasks';
+import { deviceError } from '$lib/server/api_error';
 
 // POST /api/groups/:id/countdown — schedule an app-side countdown for every member.
 // Body: { seconds: number, action: 'on'|'off'|'toggle' }
 // Native (device-side) countdown is intentionally not supported here: per-device
 // timing would drift between members and confuse the user.
-export async function POST({ params, request }: any) {
+export async function POST({ params, request, locals }: any) {
   const id = Number(params.id);
+  const isAdmin = !!locals?.isAdmin;
   const b = await request.json().catch(() => ({}));
   if (typeof b.seconds !== 'number' || b.seconds <= 0) throw error(400, 'seconds:>0');
   if (!['on', 'off', 'toggle'].includes(b.action)) throw error(400, 'action: on|off|toggle');
 
-  const members = await q<{ device_id: number }>(
-    `SELECT device_id FROM app_device_group_members WHERE group_id = ?`,
+  const allMembers = await q<{ device_id: number; guest_control: 0 | 1 }>(
+    `SELECT m.device_id, d.guest_control
+       FROM app_device_group_members m JOIN app_devices d ON d.id = m.device_id
+      WHERE m.group_id = ?`,
     [id]
   );
-  if (!members.length) throw error(400, 'group has no members');
+  if (!allMembers.length) throw error(400, 'group has no members');
+
+  // Honour the per-device guest lock when fanning out through a group.
+  const members = allMembers.filter(m => isAdmin || m.guest_control === 1);
+  if (!members.length) throw error(403, 'This group has no devices you are allowed to control.');
 
   const taskIds: number[] = [];
   const errs: string[] = [];
@@ -29,6 +37,6 @@ export async function POST({ params, request }: any) {
       taskIds.push(tid);
     } catch (e: any) { errs.push(`${m.device_id}: ${e.message || e}`); }
   }));
-  if (!taskIds.length) throw error(500, errs.join('; '));
-  return json({ ok: true, mode: 'app', task_ids: taskIds, partial_errors: errs });
+  if (!taskIds.length) await deviceError(new Error(errs.join('; ')), 'group countdown');
+  return json({ ok: true, mode: 'app', task_ids: taskIds, failed: errs.length });
 }

@@ -2,7 +2,7 @@ import { json, error } from '@sveltejs/kit';
 import { exec } from '$lib/server/db';
 
 export async function PATCH({ params, request }) {
-  const b = await request.json();
+  const b = await request.json().catch(() => ({}));
   const fields: string[] = []; const vals: any[] = [];
   for (const k of ['name', 'ip', 'username', 'password', 'enabled', 'poll_interval_seconds'] as const) {
     if (k in b) { fields.push(`${k} = ?`); vals.push(b[k]); }

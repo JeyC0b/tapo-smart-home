@@ -39,10 +39,15 @@ export interface KasaError { ok: false; type?: string; error: string; host?: str
 
 interface ConnArgs { ip: string; username: string; password: string; }
 
-function run(args: string[], timeoutMs = 60_000): Promise<string> {
+// Credentials are passed to the bridge via the child's ENVIRONMENT, never argv,
+// so they don't appear in the host process listing (/proc/<pid>/cmdline, Task
+// Manager). The bridge reads KASA_USER/KASA_PASS (falling back to --user/--pass
+// for manual debugging).
+function run(args: string[], creds?: { user: string; password: string }, timeoutMs = 60_000): Promise<string> {
   return new Promise((resolve, reject) => {
     const env2 = { ...process.env };
     if (env.PYTHON_LIBS) env2.PYTHON_LIBS = path.resolve(env.PYTHON_LIBS);
+    if (creds) { env2.KASA_USER = creds.user; env2.KASA_PASS = creds.password; }
     const child = spawn(PYTHON, [SCRIPT, ...args], { env: env2 });
     let stdout = '';
     let stderr = '';
@@ -76,23 +81,23 @@ function ensureOk<T extends { ok: boolean }>(r: T): T {
 }
 
 export async function statusOf(c: ConnArgs): Promise<KasaStatus> {
-  const out = await run(['status', '--ip', c.ip, '--user', c.username, '--password', c.password]);
+  const out = await run(['status', '--ip', c.ip], { user: c.username, password: c.password });
   return ensureOk(parse<KasaStatus | KasaError>(out) as any);
 }
 
 export async function discover(c: ConnArgs): Promise<KasaStatus> {
-  const out = await run(['discover', '--ip', c.ip, '--user', c.username, '--password', c.password]);
+  const out = await run(['discover', '--ip', c.ip], { user: c.username, password: c.password });
   return ensureOk(parse<KasaStatus | KasaError>(out) as any);
 }
 
 export async function discoverNetwork(args: { username: string; password: string; target?: string; timeoutSec?: number; excludeIps?: string[] }): Promise<KasaDiscoverNetwork> {
-  const params = ['discover-network', '--user', args.username, '--password', args.password];
+  const params = ['discover-network'];
   if (args.target) params.push('--target', args.target);
   if (args.timeoutSec) params.push('--timeout', String(args.timeoutSec));
   if (args.excludeIps && args.excludeIps.length) {
     params.push('--exclude-ip', args.excludeIps.join(','));
   }
-  const out = await run(params, 90_000);
+  const out = await run(params, { user: args.username, password: args.password }, 90_000);
   return ensureOk(parse<KasaDiscoverNetwork | KasaError>(out) as any);
 }
 
@@ -102,30 +107,30 @@ export async function setState(
   on: boolean,
   opts: { verify?: boolean; allowMomentary?: boolean } = {}
 ): Promise<{ ok: boolean; verified?: boolean | null; actual?: 0 | 1 | null; is_momentary?: boolean; error?: string }> {
-  const args = ['set', '--ip', c.ip, '--user', c.username, '--password', c.password, '--device-id', deviceId, '--state', on ? 'on' : 'off'];
+  const args = ['set', '--ip', c.ip, '--device-id', deviceId, '--state', on ? 'on' : 'off'];
   if (opts.verify) args.push('--verify');
   if (opts.allowMomentary) args.push('--allow-momentary');
-  const out = await run(args);
+  const out = await run(args, { user: c.username, password: c.password });
   return parse(out);
 }
 
 export interface LightArgs { brightness?: number; hsv?: [number, number, number]; color_temp?: number; effect?: string; }
 export async function setLight(c: ConnArgs, deviceId: string, p: LightArgs): Promise<{ ok: boolean; applied?: any; error?: string }> {
-  const args = ['light', '--ip', c.ip, '--user', c.username, '--password', c.password, '--device-id', deviceId];
+  const args = ['light', '--ip', c.ip, '--device-id', deviceId];
   if (p.brightness != null) args.push('--brightness', String(p.brightness));
   if (p.hsv) args.push('--hsv', p.hsv.join(','));
   if (p.color_temp != null) args.push('--color-temp', String(p.color_temp));
   if (p.effect) args.push('--effect', p.effect);
-  const out = await run(args);
+  const out = await run(args, { user: c.username, password: c.password });
   return parse(out);
 }
 
 export async function setFan(c: ConnArgs, deviceId: string, speed: number) {
-  const out = await run(['fan', '--ip', c.ip, '--user', c.username, '--password', c.password, '--device-id', deviceId, '--speed', String(speed)]);
+  const out = await run(['fan', '--ip', c.ip, '--device-id', deviceId, '--speed', String(speed)], { user: c.username, password: c.password });
   return parse<{ ok: boolean; speed?: number; error?: string }>(out);
 }
 
 export async function setNativeCountdown(c: ConnArgs, deviceId: string, seconds: number, action: 'on' | 'off') {
-  const out = await run(['countdown', '--ip', c.ip, '--user', c.username, '--password', c.password, '--device-id', deviceId, '--seconds', String(seconds), '--action', action]);
+  const out = await run(['countdown', '--ip', c.ip, '--device-id', deviceId, '--seconds', String(seconds), '--action', action], { user: c.username, password: c.password });
   return parse<{ ok: boolean; error?: string }>(out);
 }

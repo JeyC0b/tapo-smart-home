@@ -1,20 +1,28 @@
 import { json, error } from '@sveltejs/kit';
 import { q } from '$lib/server/db';
 import { commandSetState } from '$lib/server/poller';
+import { deviceError } from '$lib/server/api_error';
 
 // POST /api/groups/:id/toggle - if any device on -> turn all off, else turn all on.
 // Body { on: boolean } forces a target state instead of toggle.
 // Guest-allowed (see auth.ts whitelist).
-export async function POST({ params, request }: any) {
+export async function POST({ params, request, locals }: any) {
   const id = Number(params.id);
+  const isAdmin = !!locals?.isAdmin;
   const b = await request.json().catch(() => ({}));
-  const members = await q<{ device_id: number; state: 0 | 1 | null; guest_control: 0 | 1 }>(
+  const allMembers = await q<{ device_id: number; state: 0 | 1 | null; guest_control: 0 | 1 }>(
     `SELECT m.device_id, d.state, d.guest_control
        FROM app_device_group_members m JOIN app_devices d ON d.id = m.device_id
       WHERE m.group_id = ?`,
     [id]
   );
-  if (!members.length) throw error(400, 'group has no members');
+  if (!allMembers.length) throw error(400, 'group has no members');
+
+  // Per-device guest lock also applies through groups: a guest may only act on
+  // members the admin left unlocked (guest_control=1). Otherwise the group
+  // fan-out would silently bypass the device lock enforced for /api/devices.
+  const members = allMembers.filter(m => isAdmin || m.guest_control === 1);
+  if (!members.length) throw error(403, 'This group has no devices you are allowed to control.');
 
   const target: boolean = typeof b.on === 'boolean'
     ? b.on
@@ -25,6 +33,8 @@ export async function POST({ params, request }: any) {
     try { await commandSetState(m.device_id, target); }
     catch (e: any) { errs.push(`${m.device_id}: ${e.message || e}`); }
   }));
-  if (errs.length === members.length) throw error(500, errs.join('; '));
-  return json({ ok: true, state: target, partial_errors: errs });
+  // Redact raw device/bridge/DB errors (this endpoint is guest-reachable): log
+  // the detail server-side and return a mapped status / count, never the text.
+  if (errs.length === members.length) await deviceError(new Error(errs.join('; ')), 'group toggle');
+  return json({ ok: true, state: target, failed: errs.length });
 }

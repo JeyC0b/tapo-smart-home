@@ -11,11 +11,7 @@
  */
 import { q, exec } from './db';
 import { log } from './logger';
-
-const PRIVATE_RANGES = [
-  /^127\./, /^10\./, /^192\.168\./, /^172\.(1[6-9]|2\d|3[01])\./,
-  /^169\.254\./, /^::1$/, /^fc/, /^fd/
-];
+import { assertPublicUrl, safeFetch } from './net_guard';
 
 export interface WidgetCacheRow {
   id: number;
@@ -35,24 +31,13 @@ function pickJson(data: any, path: string | undefined | null): any {
   return v;
 }
 
-function isPrivateHost(host: string): boolean {
-  if (host === 'localhost') return true;
-  if (/^[\d.]+$/.test(host) || /^[\da-f:]+$/i.test(host)) {
-    return PRIVATE_RANGES.some(re => re.test(host));
-  }
-  return false;
-}
-
 async function fetchWidget(cfg: any): Promise<{ ok: true; value: any } | { ok: false; error: string }> {
   const target = String(cfg?.url || '').trim();
   if (!target) return { ok: false, error: 'URL is not set.' };
 
-  let parsed: URL;
-  try { parsed = new URL(target); } catch { return { ok: false, error: 'Invalid URL.' }; }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return { ok: false, error: 'Only http(s) is allowed.' };
-  }
-  if (isPrivateHost(parsed.hostname)) return { ok: false, error: 'Private/loopback addresses are not allowed.' };
+  // Validate scheme + resolve/verify host against the SSRF guard.
+  try { await assertPublicUrl(target); }
+  catch (e: any) { return { ok: false, error: String(e?.message || e) }; }
 
   const method = (cfg?.method === 'POST' ? 'POST' : 'GET') as 'GET' | 'POST';
   const init: RequestInit = {
@@ -71,7 +56,7 @@ async function fetchWidget(cfg: any): Promise<{ ok: true; value: any } | { ok: f
   }
 
   let r: Response;
-  try { r = await fetch(target, init); }
+  try { r = await safeFetch(target, init); }
   catch (e: any) { return { ok: false, error: String(e?.message || e).slice(0, 400) }; }
   if (!r.ok) return { ok: false, error: `HTTP ${r.status} ${r.statusText}` };
 

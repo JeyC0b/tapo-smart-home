@@ -89,7 +89,13 @@
   ];
 </script>
 
-<div class="card">
+<!--
+  When an inline panel (light/fan/countdown) is open the card grows beyond its
+  fixed home-grid cell. Neighbouring tiles are position:relative with auto
+  z-index and come later in the DOM, so they would paint over the overflowing
+  panel. Elevate the whole card while a panel is open so it stacks above them.
+-->
+<div class="card {panel !== 'none' ? 'relative z-30' : ''}">
   <div class="flex items-start justify-between gap-3">
     <div class="min-w-0 flex-1">
       <div class="flex items-center gap-2">

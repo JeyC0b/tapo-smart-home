@@ -8,7 +8,7 @@ export async function GET() {
 }
 
 export async function POST({ request }) {
-  const b = await request.json();
+  const b = await request.json().catch(() => ({}));
   if (!b.name || !b.ip || !b.username || !b.password) throw error(400, 'name, ip, username, password required');
   const kind: 'hub' | 'single' = (b.kind === 'hub') ? 'hub' : 'single';
   // verify connection

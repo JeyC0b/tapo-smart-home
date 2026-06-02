@@ -2,15 +2,17 @@ import { json, error } from '@sveltejs/kit';
 import { getAllSettings, setSetting } from '$lib/server/settings';
 import { invalidateLogLevelCache } from '$lib/server/logger';
 
-export async function GET() {
+export async function GET({ locals }: any) {
   const s = await getAllSettings();
-  // Password is never exposed to the UI — only an existence flag.
+  const isAdmin = !!locals?.isAdmin;
+  // Password is never exposed; the Tapo account username is also admin-only
+  // (this GET is reachable by unauthenticated guests).
   return json({
     poll_interval_seconds: s.poll_interval_seconds,
     rules_enabled: s.rules_enabled,
     offline_after_failures: s.offline_after_failures,
     verify_actions: s.verify_actions,
-    default_username: s.default_username,
+    default_username: isAdmin ? s.default_username : '',
     has_default_password: !!s.default_password,
     log_level: s.log_level,
     default_language: s.default_language

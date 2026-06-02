@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Device } from '$lib/types';
   import { hsvToHex, hexToHsv } from '$lib/types';
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, untrack } from 'svelte';
   import { page } from '$app/stores';
   import Icon, { type IconName } from '$lib/ui/Icon.svelte';
   import { t, tr } from '$lib/i18n';
@@ -72,23 +72,26 @@
   }
 
   // ----- Light controls -----
-  // Default brightness: average of members that report a value, fallback 80%.
-  let bri = $state(80);
-  let ctemp = $state(4000);
-  let pickerHex = $state('#ffffff');
-
-  $effect(() => {
+  // Seed brightness/temp/colour ONCE from the members' average (untrack), the
+  // same way DeviceCard does. A re-running $effect would re-seed on every data
+  // refresh (the home page calls invalidateAll() every 60s and after each
+  // action) and silently reset a slider/picker the user is mid-adjusting.
+  let bri = $state(untrack(() => {
     const b = members.map(m => m.brightness).filter(x => typeof x === 'number') as number[];
-    if (b.length) bri = Math.round(b.reduce((a, c) => a + c, 0) / b.length);
+    return b.length ? Math.round(b.reduce((a, c) => a + c, 0) / b.length) : 80;
+  }));
+  let ctemp = $state(untrack(() => {
     const t = members.map(m => m.color_temp).filter(x => typeof x === 'number') as number[];
-    if (t.length) ctemp = Math.round(t.reduce((a, c) => a + c, 0) / t.length);
-    // Use the first member's HSV as the picker seed.
+    return t.length ? Math.round(t.reduce((a, c) => a + c, 0) / t.length) : 4000;
+  }));
+  let pickerHex = $state(untrack(() => {
     const m0 = members.find(m => m.hsv);
     if (m0?.hsv) {
       const p = m0.hsv.split(',').map(Number);
-      if (p.length === 3 && p.every(n => !isNaN(n))) pickerHex = hsvToHex(p[0], p[1], p[2]);
+      if (p.length === 3 && p.every(n => !isNaN(n))) return hsvToHex(p[0], p[1], p[2]);
     }
-  });
+    return '#ffffff';
+  }));
 
   async function applyLight(p: any) { await call(`/api/groups/${group.id}/light`, p); }
   async function applyColorFromPicker() {
