@@ -1,5 +1,6 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { q, exec } from '$lib/server/db';
+import { fail } from '$lib/server/api_error';
 import type { TimerAction, RepeatKind } from '$lib/server/tasks';
 
 const VALID_ACTIONS = new Set(['on','off','toggle','on_for','off_for']);
@@ -43,12 +44,12 @@ export async function POST({ request }: any) {
   const b = await request.json().catch(() => ({}));
 
   const action = String(b.action || '');
-  if (!VALID_ACTIONS.has(action)) throw error(400, 'Invalid action.');
+  if (!VALID_ACTIONS.has(action)) fail(400, 'invalid_input', 'Invalid action.');
 
   const ids: number[] = Array.isArray(b.device_ids)
     ? b.device_ids.map(Number).filter((n: number) => Number.isFinite(n) && n > 0)
     : (b.device_id ? [Number(b.device_id)] : []);
-  if (ids.length === 0) throw error(400, 'Select at least one device.');
+  if (ids.length === 0) fail(400, 'timer_no_device', 'Select at least one device.');
 
   const repeatKind: RepeatKind = VALID_REPEATS.has(b.repeat_kind) ? b.repeat_kind : 'once';
   const repeatInterval = Math.max(1, Number(b.repeat_interval || 1));
@@ -59,7 +60,7 @@ export async function POST({ request }: any) {
   let runAt: Date;
   if (b.run_at) {
     runAt = new Date(b.run_at);
-    if (isNaN(runAt.getTime())) throw error(400, 'Invalid date/time.');
+    if (isNaN(runAt.getTime())) fail(400, 'timer_bad_time', 'Invalid date/time.');
   } else if (b.in_seconds && Number(b.in_seconds) > 0) {
     runAt = new Date(Date.now() + Number(b.in_seconds) * 1000);
   } else if (isRandom && b.random_window_start && b.random_window_end) {
@@ -69,7 +70,7 @@ export async function POST({ request }: any) {
     runAt = new Date(today); runAt.setHours(sh ?? 18, sm ?? 0, 0, 0);
     if (runAt <= new Date()) runAt.setDate(runAt.getDate() + 1);
   } else {
-    throw error(400, 'Missing run_at, in_seconds, or random window.');
+    fail(400, 'timer_bad_time', 'Missing run time.');
   }
 
   const repeatUntil = b.repeat_until ? new Date(b.repeat_until) : null;

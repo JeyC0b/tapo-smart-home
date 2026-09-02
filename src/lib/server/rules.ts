@@ -22,6 +22,7 @@ import { log } from './logger';
 import { commandSetState, commandLight } from './poller';
 import { scheduleIn } from './tasks';
 import { getSetting } from './settings';
+import { safeFetch } from './net_guard';
 
 type Metric = 'temperature' | 'humidity' | 'state' | 'battery' | 'energy_w' | 'motion' | 'http_value';
 type Op = 'lt' | 'lte' | 'gt' | 'gte' | 'eq' | 'neq';
@@ -156,7 +157,10 @@ async function fetchHttpValue(c: CondRow): Promise<number | null> {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8_000);
-    const r = await fetch(c.http_url, { method: c.http_method || 'GET', signal: ctrl.signal });
+    // safeFetch (not plain fetch): rule HTTP sources are user-supplied URLs and
+    // need the same SSRF guard the widget proxy uses — resolve the host, reject
+    // loopback/private ranges, and re-validate every redirect hop.
+    const r = await safeFetch(c.http_url, { method: c.http_method || 'GET', signal: ctrl.signal });
     clearTimeout(t);
     if (!r.ok) {
       await log('warn', 'rules', `HTTP cond #${c.id}: ${r.status} ${c.http_url}`);
@@ -283,13 +287,15 @@ async function runActionSequence(rule: RuleRow, steps: ActionRow[]): Promise<voi
         case 'on_for': {
           await commandSetState(tid, true);
           const sec = Math.max(1, Number(s.duration_seconds || 0));
-          if (sec > 0) await scheduleIn(tid, sec, 'off', `auto-revert (rule #${rule.id} step ${i+1})`);
+          // is_revert → the counter-action gets the long retry window, so the
+          // device cannot stay ON just because it dropped off the network.
+          if (sec > 0) await scheduleIn(tid, sec, 'off', `auto-revert (rule #${rule.id} step ${i+1})`, { is_revert: true });
           break;
         }
         case 'off_for': {
           await commandSetState(tid, false);
           const sec = Math.max(1, Number(s.duration_seconds || 0));
-          if (sec > 0) await scheduleIn(tid, sec, 'on', `auto-revert (rule #${rule.id} step ${i+1})`);
+          if (sec > 0) await scheduleIn(tid, sec, 'on', `auto-revert (rule #${rule.id} step ${i+1})`, { is_revert: true });
           break;
         }
         case 'set_brightness': await commandLight(tid, { brightness: Number(av.brightness) }); break;
@@ -435,7 +441,7 @@ export async function evaluateRules(): Promise<void> {
       if (v.duration && v.duration > 0) {
         const reverseAction: 'on' | 'off' = v.desired === 1 ? 'off' : 'on';
         await scheduleIn(tid, v.duration * 60, reverseAction,
-          `auto-revert from rule (${v.duration} min)`);
+          `auto-revert from rule (${v.duration} min)`, { is_revert: true });
       }
       if (v.rule) {
         await exec(

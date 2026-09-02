@@ -1,8 +1,9 @@
 import type { Handle, HandleServerError } from '@sveltejs/kit';
-import { json } from '@sveltejs/kit';
+import { json, redirect } from '@sveltejs/kit';
 import { startScheduler } from '$lib/server/scheduler';
 import {
-  AUTH_COOKIE_NAME, isAdminPasswordSet, isMutationAllowedPath, isValidSession
+  AUTH_COOKIE_NAME, isAdminOnlyPage, isAdminOnlyRead, isAdminPasswordSet,
+  isMutationAllowedPath, isValidSession
 } from '$lib/server/auth';
 import { q } from '$lib/server/db';
 import { log } from '$lib/server/logger';
@@ -18,7 +19,9 @@ export const handleError: HandleServerError = ({ error: err, event, status, mess
     log('error', 'http', `Unhandled error on ${event.url.pathname}`, { err: String(err) })
       .catch(() => {});
   }
-  return { message: status === 404 ? message : 'Internal server error.' };
+  return status === 404
+    ? { message, code: 'not_found' }
+    : { message: 'Internal server error.', code: 'internal' };
 };
 
 export const handle: Handle = async ({ event, resolve }) => {
@@ -31,12 +34,30 @@ export const handle: Handle = async ({ event, resolve }) => {
   (event.locals as any).isAdmin = isAdmin;
   (event.locals as any).adminPasswordSet = passwordIsSet;
 
-  // Mutation middleware for API endpoints — guests must not change configuration.
   const path = event.url.pathname;
+
+  // Admin-only PAGES: hiding them from the nav is not access control — their
+  // loaders return hub credentials, rules and logs to whoever asks.
+  if (!isAdmin && isAdminOnlyPage(path)) {
+    throw redirect(303, '/');
+  }
+
+  // Mutation middleware for API endpoints — guests must not change configuration.
   if (path.startsWith('/api/')) {
+    // Configuration reads are admin-only too (hub IPs, the Tapo account
+    // e-mail, rule/timer/widget definitions).
+    if (!isAdmin && isAdminOnlyRead(path)) {
+      return json(
+        { message: 'Administrator password required.', code: 'admin_required' },
+        { status: 401 }
+      );
+    }
     const role = isMutationAllowedPath(path, event.request.method);
     if (role === 'admin-only' && !isAdmin) {
-      return json({ error: 'Administrator password required.' }, { status: 401 });
+      return json(
+        { message: 'Administrator password required.', code: 'admin_required' },
+        { status: 401 }
+      );
     }
     // Per-device guest_control: even on guest-allowed endpoints, reject devices
     // for which the admin disabled guest control in Settings.
@@ -48,7 +69,10 @@ export const handle: Handle = async ({ event, resolve }) => {
         ).catch(() => []);
         if (rows[0] && rows[0].guest_control === 0) {
           return json(
-            { error: 'This device is locked — only the administrator can control it.' },
+            {
+              message: 'This device is locked — only the administrator can control it.',
+              code: 'device_locked'
+            },
             { status: 403 }
           );
         }

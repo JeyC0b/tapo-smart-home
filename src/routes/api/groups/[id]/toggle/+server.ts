@@ -1,7 +1,7 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { q } from '$lib/server/db';
 import { commandSetState } from '$lib/server/poller';
-import { deviceError } from '$lib/server/api_error';
+import { deviceError, fail } from '$lib/server/api_error';
 
 // POST /api/groups/:id/toggle - if any device on -> turn all off, else turn all on.
 // Body { on: boolean } forces a target state instead of toggle.
@@ -16,13 +16,15 @@ export async function POST({ params, request, locals }: any) {
       WHERE m.group_id = ?`,
     [id]
   );
-  if (!allMembers.length) throw error(400, 'group has no members');
+  if (!allMembers.length) fail(400, 'group_empty', 'The group has no members.');
 
   // Per-device guest lock also applies through groups: a guest may only act on
   // members the admin left unlocked (guest_control=1). Otherwise the group
   // fan-out would silently bypass the device lock enforced for /api/devices.
   const members = allMembers.filter(m => isAdmin || m.guest_control === 1);
-  if (!members.length) throw error(403, 'This group has no devices you are allowed to control.');
+  if (!members.length) {
+    fail(403, 'group_not_allowed', 'This group has no devices you are allowed to control.');
+  }
 
   const target: boolean = typeof b.on === 'boolean'
     ? b.on

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { apiError } from '$lib/api';
+  import { toastError } from '$lib/ui/toast';
   import type { Device } from '$lib/types';
   import { invalidateAll } from '$app/navigation';
   import { page } from '$app/stores';
@@ -7,7 +9,8 @@
   import GroupCard from '$lib/ui/GroupCard.svelte';
   import WidgetTile from '$lib/ui/WidgetTile.svelte';
   import Icon from '$lib/ui/Icon.svelte';
-  import { t } from '$lib/i18n';
+  import Spinner from '$lib/ui/Spinner.svelte';
+  import { t, tr } from '$lib/i18n';
 
   type Widget = {
     id: number;
@@ -24,11 +27,36 @@
   let { data }: { data: { devices: Device[]; widgets: Widget[]; groups: any[]; groupStates: Record<number, GroupState> } } = $props();
   let isAdmin = $derived(!!$page.data.isAdmin);
 
+  // Group ids with a toggle in flight — the tile shows a spinner overlay until
+  // the hub answers, so a click is never silently swallowed.
+  let busyGroups = $state<number[]>([]);
+  const groupBusy = (id: number) => busyGroups.includes(id);
+  // Manual refresh: reloading every card takes a moment, so show it running.
+  let refreshing = $state(false);
+  // The pickers write to the DB and reload — disable them while that happens.
+  let pickerBusy = $state(false);
+
+  async function refreshNow() {
+    refreshing = true;
+    try { await invalidateAll(); } finally { refreshing = false; }
+  }
+
   async function toggleGroup(id: number) {
+    if (groupBusy(id)) return;
+    busyGroups = [...busyGroups, id];
     try {
-      await fetch(`/api/groups/${id}/toggle`, { method: 'POST', body: '{}' });
+      // Report failures: silently swallowing them left the tile unchanged with
+      // no explanation when a member was unreachable or locked for guests.
+      const r = await fetch(`/api/groups/${id}/toggle`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}'
+      });
+      if (!r.ok) toastError(await apiError(r));
       await invalidateAll();
-    } catch { /* ignore */ }
+    } catch {
+      toastError(tr('errors.network'));
+    } finally {
+      busyGroups = busyGroups.filter(x => x !== id);
+    }
   }
 
   // ---------- HTTP widgety: hodnoty z DB-cache (nikoli per-mount fetch) ----------
@@ -295,67 +323,82 @@
   let availableGroups = $derived(data.groups.filter((g: any) => !groupIdsOnHome.has(g.id)));
 
   async function addDeviceToHome(d: Device) {
-    const slot = findFreeSlot(4, 4);
-    await fetch(`/api/devices/${d.id}`, {
-      method: 'PATCH', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ on_home: 1, home_x: slot.x, home_y: slot.y, home_width: 4, home_height: 4 })
-    });
-    pickerOpen = null;
-    await invalidateAll();
+    if (pickerBusy) return;
+    pickerBusy = true;
+    try {
+      const slot = findFreeSlot(4, 4);
+      const r = await fetch(`/api/devices/${d.id}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ on_home: 1, home_x: slot.x, home_y: slot.y, home_width: 4, home_height: 4 })
+      });
+      if (!r.ok) { toastError(await apiError(r)); return; }
+      pickerOpen = null;
+      await invalidateAll();
+    } finally { pickerBusy = false; }
   }
   async function addWidgetToHome(w: Widget) {
-    const slot = findFreeSlot(4, 4);
-    await fetch(`/api/widgets/${w.id}`, {
-      method: 'PATCH', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ on_home: 1, home_x: slot.x, home_y: slot.y, home_width: 4, home_height: 4 })
-    });
-    pickerOpen = null;
-    pullValue(w.id);
-    await invalidateAll();
+    if (pickerBusy) return;
+    pickerBusy = true;
+    try {
+      const slot = findFreeSlot(4, 4);
+      const r = await fetch(`/api/widgets/${w.id}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ on_home: 1, home_x: slot.x, home_y: slot.y, home_width: 4, home_height: 4 })
+      });
+      if (!r.ok) { toastError(await apiError(r)); return; }
+      pickerOpen = null;
+      pullValue(w.id);
+      await invalidateAll();
+    } finally { pickerBusy = false; }
   }
   // Adds a group to the home screen by creating a pre-filled "group" widget linked to the group
   // and placing it in the first free grid slot. If a widget for this group already exists
   // (but is not on the home screen), it is reused — no duplicates are created.
   async function addGroupToHome(g: any) {
-    const slot = findFreeSlot(4, 4);
-    const existing = data.widgets.find(w =>
-      w.kind === 'group' && Number(w.config?.group_id) === g.id
-    );
-    if (existing) {
-      await fetch(`/api/widgets/${existing.id}`, {
-        method: 'PATCH', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          on_home: 1, enabled: 1,
-          home_x: slot.x, home_y: slot.y, home_width: 4, home_height: 4
-        })
-      });
-    } else {
-      const r = await fetch('/api/widgets', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          kind: 'group',
-          title: g.name,
-          config: {
-            group_id: g.id,
-            show_title: true,
-            state_display: 'icon',
-            show_meta: true,
-            title_size: 'sm', title_align: 'left', title_weight: 'bold', title_color: 'default',
-            align: 'center', vertical_align: 'top',
-            value_size: '3xl', value_weight: 'bold', value_color: 'default'
-          },
-          enabled: 1, on_home: 1
-        })
-      });
-      if (!r.ok) { alert(await r.text()); return; }
-      const { id } = await r.json();
-      await fetch(`/api/widgets/${id}`, {
-        method: 'PATCH', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ home_x: slot.x, home_y: slot.y, home_width: 4, home_height: 4 })
-      });
-    }
-    pickerOpen = null;
-    await invalidateAll();
+    if (pickerBusy) return;
+    pickerBusy = true;
+    try {
+      const slot = findFreeSlot(4, 4);
+      const existing = data.widgets.find(w =>
+        w.kind === 'group' && Number(w.config?.group_id) === g.id
+      );
+      if (existing) {
+        const r = await fetch(`/api/widgets/${existing.id}`, {
+          method: 'PATCH', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            on_home: 1, enabled: 1,
+            home_x: slot.x, home_y: slot.y, home_width: 4, home_height: 4
+          })
+        });
+        if (!r.ok) { toastError(await apiError(r)); return; }
+      } else {
+        const r = await fetch('/api/widgets', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            kind: 'group',
+            title: g.name,
+            config: {
+              group_id: g.id,
+              show_title: true,
+              state_display: 'icon',
+              show_meta: true,
+              title_size: 'sm', title_align: 'left', title_weight: 'bold', title_color: 'default',
+              align: 'center', vertical_align: 'top',
+              value_size: '3xl', value_weight: 'bold', value_color: 'default'
+            },
+            enabled: 1, on_home: 1
+          })
+        });
+        if (!r.ok) { toastError(await apiError(r)); return; }
+        const { id } = await r.json();
+        await fetch(`/api/widgets/${id}`, {
+          method: 'PATCH', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ home_x: slot.x, home_y: slot.y, home_width: 4, home_height: 4 })
+        });
+      }
+      pickerOpen = null;
+      await invalidateAll();
+    } finally { pickerBusy = false; }
   }
 
   const SENSOR_KINDS = new Set(['sensor','motion','contact','leak']);
@@ -390,8 +433,8 @@
           {#if editMode}<Icon name="check" size={14} />{$t('home.done')}{:else}<Icon name="edit" size={14} />{$t('home.rearrange')}{/if}
         </button>
       {/if}
-      <button class="btn-ghost inline-flex items-center gap-1 text-sm" onclick={() => invalidateAll()}>
-        <Icon name="refresh" size={14} /><span class="hidden sm:inline">{$t('home.refresh')}</span>
+      <button class="btn-ghost inline-flex items-center gap-1 text-sm" onclick={refreshNow} disabled={refreshing}>
+        {#if refreshing}<Spinner size={14} />{:else}<Icon name="refresh" size={14} />{/if}<span class="hidden sm:inline">{$t('home.refresh')}</span>
       </button>
     </div>
   </div>
@@ -435,7 +478,7 @@
           {#if tile.type === 'device' && tile.device}
             {@const d = tile.device}
             {#if isSensor(d)}
-              <div class="card h-full overflow-hidden" class:opacity-60={d.excluded === 1}>
+              <div class="card card-hover h-full overflow-hidden" class:opacity-60={d.excluded === 1}>
                 <div class="flex items-center justify-between gap-1 min-w-0">
                   <span class="truncate text-sm font-semibold">{d.custom_name || d.tapo_alias}</span>
                   <span class={d.online ? 'badge-on' : 'badge-err'}>{d.online ? '●' : '○'}</span>
@@ -482,14 +525,19 @@
                            appearance={renderAs as 'bulb' | 'plug'}
                            on:changed={() => invalidateAll()} />
               {:else}
-                <button type="button" class="card h-full w-full overflow-hidden p-0 text-left"
+                <button type="button" disabled={groupBusy(gid)} aria-busy={groupBusy(gid)}
+                        class="card relative h-full w-full overflow-hidden p-0 text-left
+                               {editMode ? '' : 'card-click'}"
                         onclick={() => { if (!editMode) toggleGroup(gid); }}>
                   <WidgetTile widget={tile.widget} devices={data.devices}
                               groupState={data.groupStates[gid]} groupConfig={gcfg} />
+                  {#if groupBusy(gid)}
+                    <span class="busy-overlay"><Spinner size={22} /></span>
+                  {/if}
                 </button>
               {/if}
             {:else}
-              <div class="card h-full overflow-hidden p-0">
+              <div class="card card-hover h-full overflow-hidden p-0">
                 <WidgetTile widget={tile.widget} devices={data.devices} httpValue={httpData[tile.widget.id]} />
               </div>
             {/if}
@@ -540,7 +588,7 @@
           {#if tile.type === 'device' && tile.device}
             {@const d = tile.device}
             {#if isSensor(d)}
-              <div class="card">
+              <div class="card card-hover">
                 <div class="flex items-center justify-between gap-1">
                   <span class="truncate text-sm font-semibold">{d.custom_name || d.tapo_alias}</span>
                   <span class={d.online ? 'badge-on' : 'badge-err'}>{d.online ? '●' : '○'}</span>
@@ -568,14 +616,18 @@
                            appearance={renderAs as 'bulb' | 'plug'}
                            on:changed={() => invalidateAll()} />
               {:else}
-                <button type="button" class="card w-full p-0 min-h-[120px] text-left"
+                <button type="button" disabled={groupBusy(gid)} aria-busy={groupBusy(gid)}
+                        class="card card-click relative w-full p-0 min-h-[120px] text-left"
                         onclick={() => toggleGroup(gid)}>
                   <WidgetTile widget={tile.widget} devices={data.devices}
                               groupState={data.groupStates[gid]} groupConfig={gcfg} />
+                  {#if groupBusy(gid)}
+                    <span class="busy-overlay"><Spinner size={22} /></span>
+                  {/if}
                 </button>
               {/if}
             {:else}
-              <div class="card p-0 min-h-[120px]">
+              <div class="card card-hover p-0 min-h-[120px]">
                 <WidgetTile widget={tile.widget} devices={data.devices} httpValue={httpData[tile.widget.id]} />
               </div>
             {/if}
@@ -611,13 +663,17 @@
         {:else}
           <div class="grid gap-2 sm:grid-cols-2">
             {#each availableDevices as d}
-              <button class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-2 text-left hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800"
+              <button disabled={pickerBusy}
+                      class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-2 text-left transition
+                             hover:border-brand-400 hover:bg-slate-50 active:scale-[0.98] disabled:opacity-50
+                             dark:border-slate-700 dark:hover:border-brand-500 dark:hover:bg-slate-800"
                       onclick={() => addDeviceToHome(d)}>
                 <div class="min-w-0">
                   <div class="truncate text-sm font-medium">{d.custom_name || d.tapo_alias || d.device_id}</div>
                   <div class="text-[11px] text-slate-500">{d.room || $t('common.unassigned')} · {d.kind}</div>
                 </div>
-                <Icon name="plus" size={14} class="shrink-0 text-brand-600" />
+                {#if pickerBusy}<Spinner size={14} class="shrink-0 text-brand-600" />
+                {:else}<Icon name="plus" size={14} class="shrink-0 text-brand-600" />{/if}
               </button>
             {/each}
           </div>
@@ -634,7 +690,10 @@
           </p>
           <div class="grid gap-2 sm:grid-cols-2">
             {#each availableGroups as g}
-              <button class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-2 text-left hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800"
+              <button disabled={pickerBusy}
+                      class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-2 text-left transition
+                             hover:border-brand-400 hover:bg-slate-50 active:scale-[0.98] disabled:opacity-50
+                             dark:border-slate-700 dark:hover:border-brand-500 dark:hover:bg-slate-800"
                       onclick={() => addGroupToHome(g)}>
                 <div class="flex items-center gap-2 min-w-0">
                   <Icon name={g.icon || 'layers'} size={18} class="shrink-0 text-slate-500" />
@@ -646,7 +705,8 @@
                     </div>
                   </div>
                 </div>
-                <Icon name="plus" size={14} class="shrink-0 text-brand-600" />
+                {#if pickerBusy}<Spinner size={14} class="shrink-0 text-brand-600" />
+                {:else}<Icon name="plus" size={14} class="shrink-0 text-brand-600" />{/if}
               </button>
             {/each}
           </div>
@@ -659,13 +719,17 @@
         {:else}
           <div class="grid gap-2 sm:grid-cols-2">
             {#each availableWidgets as w}
-              <button class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-2 text-left hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800"
+              <button disabled={pickerBusy}
+                      class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-2 text-left transition
+                             hover:border-brand-400 hover:bg-slate-50 active:scale-[0.98] disabled:opacity-50
+                             dark:border-slate-700 dark:hover:border-brand-500 dark:hover:bg-slate-800"
                       onclick={() => addWidgetToHome(w)}>
                 <div class="min-w-0">
                   <div class="truncate text-sm font-medium">{w.title || $t('widgets.untitled')}</div>
                   <div class="text-[11px] text-slate-500">{w.kind}</div>
                 </div>
-                <Icon name="plus" size={14} class="shrink-0 text-brand-600" />
+                {#if pickerBusy}<Spinner size={14} class="shrink-0 text-brand-600" />
+                {:else}<Icon name="plus" size={14} class="shrink-0 text-brand-600" />{/if}
               </button>
             {/each}
           </div>

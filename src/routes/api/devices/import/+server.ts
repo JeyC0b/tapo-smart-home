@@ -1,7 +1,8 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
+import { fail } from '$lib/server/api_error';
 import { q, exec } from '$lib/server/db';
 import { getDefaultCredentials } from '$lib/server/settings';
-import { pollAll, pollOne } from '$lib/server/poller';
+import { pollOne } from '$lib/server/poller';
 
 /**
  * POST /api/devices/import
@@ -19,14 +20,16 @@ import { pollAll, pollOne } from '$lib/server/poller';
  */
 export async function POST({ request }) {
   const b = await request.json().catch(() => ({} as any));
-  if (!b.ip) throw error(400, 'ip required');
+  if (!b.ip) fail(400, 'invalid_input', 'An IP address is required.');
 
   let username = b.username, password = b.password;
   if (!username || !password) {
     const def = await getDefaultCredentials();
     if (def) { username = def.username; password = def.password; }
   }
-  if (!username || !password) throw error(400, 'Credentials are missing. Set defaults in Settings.');
+  if (!username || !password) {
+    fail(400, 'credentials_missing', 'Credentials are missing. Set defaults in Settings.');
+  }
 
   // ---- IP-change re-pair ----
   if (b.device_id) {

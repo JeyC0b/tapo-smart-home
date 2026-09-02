@@ -164,6 +164,14 @@ CREATE TABLE IF NOT EXISTS app_scheduled_tasks (
                                  'set_brightness','set_color','set_temp') NOT NULL,
   run_at                    DATETIME NOT NULL,
   status                    ENUM('pending','done','failed','cancelled') NOT NULL DEFAULT 'pending',
+  -- Retry bookkeeping (v12): a task whose device is unreachable stays
+  -- 'pending' and is re-attempted with a backoff until its retry window
+  -- expires, instead of failing on the first error. See db/migrations/v12.
+  attempt_count             INT NOT NULL DEFAULT 0,
+  retry_at                  DATETIME NULL,
+  retry_targets             JSON NULL,
+  is_revert                 TINYINT(1) NOT NULL DEFAULT 0,
+  next_created              TINYINT(1) NOT NULL DEFAULT 0,
   note                      VARCHAR(255) NULL,
   repeat_kind               ENUM('once','minutely','hourly','daily','weekly','monthly')
                                                              NOT NULL DEFAULT 'once',
@@ -190,6 +198,7 @@ CREATE TABLE IF NOT EXISTS app_scheduled_tasks (
   rule_id                   INT NULL,
   CONSTRAINT fk_sched_dev FOREIGN KEY (device_id) REFERENCES app_devices(id) ON DELETE CASCADE,
   INDEX idx_status_run (status, run_at),
+  INDEX idx_status_retry (status, retry_at),
   INDEX idx_parent (parent_task_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -237,6 +246,13 @@ INSERT IGNORE INTO app_settings (k,v) VALUES
   ('log_retention_days','30'),
   ('readings_retention_days','30'),
   ('task_runs_retention_days','30'),
+  -- Roughly how long a scheduled task keeps retrying an unreachable device,
+  -- in minutes (0 = do not retry). Automatic reverts of "on/off for N minutes"
+  -- timers use the longer window so a device is never left in a state the
+  -- user did not ask for.
+  ('task_retry_minutes','60'),
+  ('task_revert_retry_minutes','1440'),
+  ('default_language','en'),
   ('admin_password_hash',''),
   ('admin_password_salt','');
 

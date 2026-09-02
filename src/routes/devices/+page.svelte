@@ -1,7 +1,10 @@
 <script lang="ts">
+  import { apiError } from '$lib/api';
+  import { toastError, toastSuccess } from '$lib/ui/toast';
   import type { Device, Hub } from '$lib/types';
   import { invalidateAll } from '$app/navigation';
   import Icon from '$lib/ui/Icon.svelte';
+  import Spinner from '$lib/ui/Spinner.svelte';
   import { t, tr } from '$lib/i18n';
 
   type DeviceWithHub = Device & { hub_name?: string };
@@ -45,20 +48,30 @@
         method: 'PATCH', headers: { 'content-type': 'application/json' },
         body: JSON.stringify(patch)
       });
-      if (!r.ok) alert(await r.text());
+      if (!r.ok) toastError(await apiError(r));
       await invalidateAll();
     } finally { saving = null; }
   }
 
   async function removeDevice(d: Device) {
     if (!confirm(tr('devices.delete_confirm', { name: d.custom_name || d.tapo_alias || d.device_id }))) return;
-    await fetch(`/api/devices/${d.id}`, { method: 'DELETE' });
+    const r = await fetch(`/api/devices/${d.id}`, { method: 'DELETE' });
+    if (!r.ok) { toastError(await apiError(r)); return; }
     await invalidateAll();
   }
 
+  let polling = $state(false);
   async function pollNow() {
-    await fetch('/api/poll', { method: 'POST' });
-    await invalidateAll();
+    // A full poll of every hub takes a while — disable the button meanwhile so
+    // the user doesn't queue three of them thinking nothing happened.
+    polling = true;
+    try {
+      const r = await fetch('/api/poll', { method: 'POST' });
+      if (!r.ok) { toastError(await apiError(r)); return; }
+      await invalidateAll();
+    } catch {
+      toastError(tr('errors.network'));
+    } finally { polling = false; }
   }
 
   async function scanNetwork() {
@@ -68,13 +81,13 @@
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ timeout: 8 })
       });
-      if (!r.ok) { scanErr = await r.text(); return; }
+      if (!r.ok) { scanErr = await apiError(r); return; }
       scanResult = await r.json();
     } finally { scanning = false; }
   }
 
   async function addFound(item: any) {
-    if (!item.ip) { alert(tr('devices.add_failed_no_ip')); return; }
+    if (!item.ip) { toastError(tr('devices.add_failed_no_ip')); return; }
     importing = item.ip;
     try {
       const body: any = {
@@ -87,7 +100,7 @@
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body)
       });
-      if (!r.ok) { alert(await r.text()); return; }
+      if (!r.ok) { toastError(await apiError(r)); return; }
       imported.add(item.ip); imported = new Set(imported);
       setTimeout(() => invalidateAll(), 1200);
     } finally { importing = null; }
@@ -102,7 +115,7 @@
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ip: item.ip, device_id: item.device_id, alias: item.tapo_alias || item.model })
       });
-      if (!r.ok) { alert(await r.text()); return; }
+      if (!r.ok) { toastError(await apiError(r)); return; }
       imported.add(item.ip); imported = new Set(imported);
       setTimeout(() => invalidateAll(), 1200);
     } finally { importing = null; }
@@ -124,7 +137,7 @@
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body)
       });
-      if (!r.ok) { manualErr = await r.text(); return; }
+      if (!r.ok) { manualErr = await apiError(r); return; }
       manual = { name: '', ip: '', username: '', password: '', kind: 'single' };
       await invalidateAll();
     } finally { manualBusy = false; }
@@ -145,7 +158,7 @@
       : tr('devices.hub_delete', { name: h.name });
     if (!confirm(msg)) return;
     const r = await fetch(`/api/hubs/${h.id}`, { method: 'DELETE' });
-    if (!r.ok) { alert(await r.text()); return; }
+    if (!r.ok) { toastError(await apiError(r)); return; }
     await invalidateAll();
   }
 
@@ -156,8 +169,8 @@
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ip: h.ip })
       });
-      if (!r.ok) alert(await r.text());
-      else alert(h.kind === 'hub' ? tr('devices.hub_test_ok_hub') : tr('devices.hub_test_ok_device'));
+      if (!r.ok) toastError(await apiError(r));
+      else toastSuccess(h.kind === 'hub' ? tr('devices.hub_test_ok_hub') : tr('devices.hub_test_ok_device'));
     } finally { testingHub = null; }
   }
 
@@ -183,10 +196,10 @@
   <h1 class="text-2xl font-bold">{$t('devices.title')}</h1>
   <div class="flex flex-wrap gap-2">
     <button class="btn-ghost flex items-center gap-1.5" onclick={scanNetwork} disabled={scanning}>
-      <Icon name="search" size={16} />{scanning ? $t('devices.scanning') : $t('devices.scan')}
+      {#if scanning}<Spinner size={16} />{:else}<Icon name="search" size={16} />{/if}{scanning ? $t('devices.scanning') : $t('devices.scan')}
     </button>
-    <button class="btn-primary flex items-center gap-1.5" onclick={pollNow}>
-      <Icon name="refresh" size={16} />{$t('devices.poll_now')}
+    <button class="btn-primary flex items-center gap-1.5" onclick={pollNow} disabled={polling}>
+      {#if polling}<Spinner size={16} />{:else}<Icon name="refresh" size={16} />{/if}{polling ? $t('common.loading') : $t('devices.poll_now')}
     </button>
   </div>
 </div>
@@ -243,14 +256,14 @@
               <span class="badge-warn text-[10px]">{tr('devices.ip_changed_from', { ip: f.ip_change.old_ip })}</span>
               <button class="btn-primary inline-flex items-center gap-1 text-xs"
                       onclick={() => repairIp(f)} disabled={importing === f.ip}>
-                <Icon name="refresh" size={12} />{importing === f.ip ? '…' : $t('devices.update_ip')}
+                {#if importing === f.ip}<Spinner size={12} />{:else}<Icon name="refresh" size={12} />{/if}{$t('devices.update_ip')}
               </button>
             {:else if f.parent_device_id}
               <span class="text-xs text-slate-500">{$t('devices.will_be_added_with_hub')}</span>
             {:else if f.ip}
               <button class="btn-primary inline-flex items-center gap-1 text-xs"
                       onclick={() => addFound(f)} disabled={importing === f.ip}>
-                <Icon name="plus" size={12} />{importing === f.ip ? '…' : $t('devices.add_dots')}
+                {#if importing === f.ip}<Spinner size={12} />{:else}<Icon name="plus" size={12} />{/if}{$t('devices.add_dots')}
               </button>
             {/if}
           </div>
@@ -322,7 +335,7 @@
   {/if}
   <div class="mt-3">
     <button class="btn-primary inline-flex items-center gap-1" onclick={manualAdd} disabled={manualBusy}>
-      <Icon name="plus" size={14} />{manualBusy ? $t('devices.adding') : $t('devices.add')}
+      {#if manualBusy}<Spinner size={14} />{:else}<Icon name="plus" size={14} />{/if}{manualBusy ? $t('devices.adding') : $t('devices.add')}
     </button>
   </div>
 </details>
@@ -332,7 +345,7 @@
   <h2 class="mb-2 mt-2 text-lg font-semibold">{$t('devices.hubs_title')}</h2>
   <div class="mb-6 space-y-2">
     {#each data.hubs as h (h.id)}
-      <div class="card flex flex-wrap items-center justify-between gap-3">
+      <div class="card card-hover flex flex-wrap items-center justify-between gap-3">
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
             <Icon name={h.kind === 'hub' ? 'hub' : 'plug'} size={18} class="text-slate-500" />
@@ -348,7 +361,7 @@
         <div class="flex flex-wrap gap-2">
           <button class="btn-ghost inline-flex items-center gap-1 text-xs"
                   onclick={() => testHub(h)} disabled={testingHub === h.id}>
-            <Icon name="wifi" size={12} />{testingHub === h.id ? $t('devices.testing') : $t('devices.test')}
+            {#if testingHub === h.id}<Spinner size={12} />{:else}<Icon name="wifi" size={12} />{/if}{testingHub === h.id ? $t('devices.testing') : $t('devices.test')}
           </button>
           <button class="btn-ghost inline-flex items-center gap-1 text-xs" onclick={() => toggleHub(h)}>
             {#if h.enabled}<Icon name="pause" size={12} />{$t('devices.hub_disable')}{:else}<Icon name="play" size={12} />{$t('devices.hub_enable')}{/if}
@@ -373,7 +386,7 @@
 
 <div class="space-y-3">
   {#each filtered as d (d.id)}
-    <div class="card {d.excluded ? 'opacity-60' : ''}">
+    <div class="card card-hover {d.excluded ? 'opacity-60' : ''}">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
           <div class="mb-1 flex flex-wrap items-center gap-2">

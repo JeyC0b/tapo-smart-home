@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { q } from '$lib/server/db';
 import { commandLight } from '$lib/server/poller';
-import { deviceError } from '$lib/server/api_error';
+import { deviceError, fail } from '$lib/server/api_error';
 
 // POST /api/groups/:id/light — fan out light parameters (brightness/hsv/color_temp)
 // to every member that has the matching capability. Errors per-device are collected,
@@ -23,11 +23,13 @@ export async function POST({ params, request, locals }: any) {
       WHERE m.group_id = ?`,
     [id]
   );
-  if (!allMembers.length) throw error(400, 'group has no members');
+  if (!allMembers.length) fail(400, 'group_empty', 'The group has no members.');
 
   // Honour the per-device guest lock when fanning out through a group.
   const members = allMembers.filter(m => isAdmin || m.guest_control === 1);
-  if (!members.length) throw error(403, 'This group has no devices you are allowed to control.');
+  if (!members.length) {
+    fail(403, 'group_not_allowed', 'This group has no devices you are allowed to control.');
+  }
 
   const errs: string[] = [];
   let ok = 0;

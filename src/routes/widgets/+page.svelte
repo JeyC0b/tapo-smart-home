@@ -1,7 +1,10 @@
 <script lang="ts">
+  import { apiError } from '$lib/api';
+  import { toastError } from '$lib/ui/toast';
   import { invalidateAll } from '$app/navigation';
   import { page } from '$app/stores';
   import Icon from '$lib/ui/Icon.svelte';
+  import Spinner from '$lib/ui/Spinner.svelte';
   import { onMount, onDestroy } from 'svelte';
   import WidgetTile from '$lib/ui/WidgetTile.svelte';
   import { t, tr } from '$lib/i18n';
@@ -136,7 +139,11 @@
     draft.config.items = a;
   }
 
+  let saving = $state(false);
   async function save() {
+    if (saving) return;
+    saving = true;
+    try {
     const isNew = !draft.id;
     const body: any = {
       kind: draft.kind, title: draft.title || null,
@@ -148,14 +155,16 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body)
     });
-    if (!r.ok) { alert(await r.text()); return; }
+    if (!r.ok) { toastError(await apiError(r)); return; }
     cancelEdit();
     await invalidateAll();
     pullAll();
+    } finally { saving = false; }
   }
   async function del(w: Widget) {
     if (!confirm(tr('widgets.delete_confirm', { name: w.title || w.kind }))) return;
-    await fetch(`/api/widgets/${w.id}`, { method: 'DELETE' });
+    const r = await fetch(`/api/widgets/${w.id}`, { method: 'DELETE' });
+    if (!r.ok) { toastError(await apiError(r)); return; }
     await invalidateAll();
   }
   async function toggleHome(w: Widget) {
@@ -163,7 +172,7 @@
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ on_home: w.on_home ? 0 : 1 })
     });
-    if (!r.ok) { alert(await r.text()); return; }
+    if (!r.ok) { toastError(await apiError(r)); return; }
     await invalidateAll();
   }
 
@@ -232,7 +241,7 @@
 
 <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
   {#each data.widgets as w (w.id)}
-    <div class="card">
+    <div class="card card-hover">
       <div class="mb-2 flex items-center justify-between gap-2">
         <div class="min-w-0">
           <div class="truncate text-sm font-semibold">{w.title || $t('widgets.untitled')}</div>
@@ -644,7 +653,9 @@
 
       <div class="flex justify-end gap-2 pt-2">
         <button class="btn-ghost" onclick={cancelEdit}>{$t('common.cancel')}</button>
-        <button class="btn-primary" onclick={save}>{draft.id ? $t('widgets.save') : $t('widgets.create')}</button>
+        <button class="btn-primary inline-flex items-center gap-1" onclick={save} disabled={saving}>
+          {#if saving}<Spinner size={14} />{/if}{draft.id ? $t('widgets.save') : $t('widgets.create')}
+        </button>
       </div>
     </div>
   </div>

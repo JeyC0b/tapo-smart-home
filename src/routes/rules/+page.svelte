@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { apiError } from '$lib/api';
+  import { toastError } from '$lib/ui/toast';
   import type { Device, Rule, Dependency, RuleAction, RuleMetric, RuleOp, RuleTrigger, RuleCondition, RuleCondSource, RuleActionStep } from '$lib/types';
   import { OP_LABEL, ACTION_LABEL, METRIC_LABEL, DAYS, listToDaysMask, hexToHsv, hsvToHex, isBoolMetric } from '$lib/types';
   import { invalidateAll } from '$app/navigation';
   import Icon from '$lib/ui/Icon.svelte';
+  import Spinner from '$lib/ui/Spinner.svelte';
   import { t, tr } from '$lib/i18n';
 
   let { data }: { data: { devices: Device[]; rules: Rule[]; deps: Dependency[] } } = $props();
@@ -285,7 +288,7 @@
 
   // ---- Action chain helpers (mirror of conditions UX) ----
   function addAction() {
-    if (f.actions.length >= 20) { alert(tr('rules.max_actions')); return; }
+    if (f.actions.length >= 20) { toastError(tr('rules.max_actions')); return; }
     f.actions = [...f.actions, blankAction()];
   }
   function removeAction(i: number) {
@@ -345,17 +348,17 @@
 
   let busy = $state(false);
   async function submit() {
-    if (!f.name.trim()) { alert(tr('rules.name_required')); return; }
+    if (!f.name.trim()) { toastError(tr('rules.name_required')); return; }
     // Validate that the action chain has at least one non-wait step with a target.
     const nonWait = f.actions.filter(a => a.kind !== 'wait');
-    if (!nonWait.length) { alert(tr('rules.must_have_action')); return; }
+    if (!nonWait.length) { toastError(tr('rules.must_have_action')); return; }
     for (let i = 0; i < f.actions.length; i++) {
       const a = f.actions[i];
       if (a.kind === 'wait') {
         const sec = Math.max(0, Math.round(Number(a.wait_minutes || 0) * 60 + Number(a.wait_seconds || 0)));
-        if (sec <= 0) { alert(tr('rules.wait_needs_time', { n: i + 1 })); return; }
+        if (sec <= 0) { toastError(tr('rules.wait_needs_time', { n: i + 1 })); return; }
       } else if (!a.target_device_id) {
-        alert(tr('rules.action_needs_target', { n: i + 1 })); return;
+        toastError(tr('rules.action_needs_target', { n: i + 1 })); return;
       }
     }
 
@@ -364,10 +367,10 @@
       for (let i = 0; i < f.conditions.length; i++) {
         const c = f.conditions[i];
         if (c.source_type === 'http') {
-          if (!c.http_url.trim()) { alert(tr('rules.cond_url_required', { n: i + 1 })); return; }
-          try { new URL(c.http_url.trim()); } catch { alert(tr('rules.cond_url_invalid', { n: i + 1 })); return; }
+          if (!c.http_url.trim()) { toastError(tr('rules.cond_url_required', { n: i + 1 })); return; }
+          try { new URL(c.http_url.trim()); } catch { toastError(tr('rules.cond_url_invalid', { n: i + 1 })); return; }
         } else {
-          if (!c.device_id) { alert(tr('rules.cond_device_required', { n: i + 1 })); return; }
+          if (!c.device_id) { toastError(tr('rules.cond_device_required', { n: i + 1 })); return; }
         }
       }
       conditions = buildConditionsPayload();
@@ -416,7 +419,7 @@
         method, headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body)
       });
-      if (!r.ok) { alert(await r.text()); return; }
+      if (!r.ok) { toastError(await apiError(r)); return; }
       editingId = null;
       f = blank();
       await invalidateAll();
@@ -428,12 +431,13 @@
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify(p)
     });
-    if (!r.ok) alert(await r.text());
+    if (!r.ok) toastError(await apiError(r));
     await invalidateAll();
   }
   async function del(id: number) {
     if (!confirm(tr('rules.delete_confirm'))) return;
-    await fetch(`/api/rules/${id}`, { method: 'DELETE' });
+    const r = await fetch(`/api/rules/${id}`, { method: 'DELETE' });
+    if (!r.ok) { toastError(await apiError(r)); return; }
     await invalidateAll();
   }
 
@@ -523,7 +527,8 @@
   }
   async function delDep(id: number) {
     if (!confirm(tr('rules.deps_delete_confirm'))) return;
-    await fetch(`/api/dependencies/${id}`, { method: 'DELETE' });
+    const r = await fetch(`/api/dependencies/${id}`, { method: 'DELETE' });
+    if (!r.ok) { toastError(await apiError(r)); return; }
     await invalidateAll();
   }
 </script>
@@ -858,11 +863,11 @@
 
     <div class="flex flex-wrap items-center gap-2">
       <button class="btn-primary inline-flex items-center gap-1" onclick={submit} disabled={busy}>
-        {#if editingId != null}
-          <Icon name="check" size={14} />{busy ? $t('common.saving') : $t('rules.save_changes')}
-        {:else}
-          <Icon name="plus" size={14} />{busy ? $t('common.saving') : $t('rules.create_rule')}
-        {/if}
+        {#if busy}<Spinner size={14} />{:else if editingId != null}<Icon name="check" size={14} />
+        {:else}<Icon name="plus" size={14} />{/if}
+        {busy ? $t('common.saving')
+          : editingId != null ? $t('rules.save_changes')
+          : $t('rules.create_rule')}
       </button>
       {#if editingId != null}
         <button type="button" class="btn-ghost inline-flex items-center gap-1" onclick={cancelEdit} disabled={busy}>
@@ -876,7 +881,7 @@
 <!-- Rules list -->
 <div class="space-y-2">
   {#each data.rules as r (r.id)}
-    <div class="card">
+    <div class="card card-hover">
       <div class="flex flex-wrap items-start justify-between gap-2">
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
@@ -938,7 +943,7 @@
 
 <div class="space-y-1">
   {#each data.deps as d}
-    <div class="card flex items-center justify-between">
+    <div class="card card-hover flex items-center justify-between">
       <div class="text-sm">
         <b>{d.name}</b> — {dname(d.source_device_id)} = {d.source_state ? 'ON' : 'OFF'}
         ⇒ {dname(d.target_device_id)} = {d.required_state ? 'ON' : 'OFF'}

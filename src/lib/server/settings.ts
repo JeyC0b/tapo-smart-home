@@ -12,6 +12,15 @@ export interface AppSettings {
   default_password: string;
   log_level: LogLevelSetting;
   default_language: LanguageCode;
+  /**
+   * Roughly how long a task keeps retrying a device that does not answer.
+   * The window is converted into an attempt budget, so a task that starts late
+   * still gets its full share of retries. 0 disables retrying. Automatic
+   * reverts of "on/off for N minutes" timers use their own, much longer window
+   * so a device is never left in a state the user did not ask for.
+   */
+  task_retry_minutes: number;
+  task_revert_retry_minutes: number;
 }
 
 const DEFAULTS: AppSettings = {
@@ -22,8 +31,16 @@ const DEFAULTS: AppSettings = {
   default_username: '',
   default_password: '',
   log_level: 'info',
-  default_language: 'en'
+  default_language: 'en',
+  task_retry_minutes: 60,
+  task_revert_retry_minutes: 1440
 };
+
+/** Parse a stored setting as a non-negative number, falling back on garbage. */
+function num(v: string | undefined, fallback: number): number {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
 
 export async function getAllSettings(): Promise<AppSettings> {
   const rows = await q<{ k: string; v: string }>('SELECT k, v FROM app_settings');
@@ -39,7 +56,9 @@ export async function getAllSettings(): Promise<AppSettings> {
     default_username: m.get('default_username') ?? '',
     default_password: m.get('default_password') ?? '',
     log_level: (['debug','info','warn','error'].includes(lvl) ? lvl : 'info') as LogLevelSetting,
-    default_language: lang
+    default_language: lang,
+    task_retry_minutes: num(m.get('task_retry_minutes'), DEFAULTS.task_retry_minutes),
+    task_revert_retry_minutes: num(m.get('task_revert_retry_minutes'), DEFAULTS.task_revert_retry_minutes)
   };
 }
 

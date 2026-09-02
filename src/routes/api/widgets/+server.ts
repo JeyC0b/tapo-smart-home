@@ -1,5 +1,6 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { q, exec } from '$lib/server/db';
+import { fail } from '$lib/server/api_error';
 
 const KINDS = new Set(['device','sensor','http','label','spacer','group','line']);
 
@@ -16,7 +17,7 @@ export async function GET() {
 export async function POST({ request }: any) {
   const b = await request.json().catch(() => ({}));
   const kind = String(b.kind || '');
-  if (!KINDS.has(kind)) throw error(400, 'Invalid widget type.');
+  if (!KINDS.has(kind)) fail(400, 'invalid_input', 'Invalid widget type.');
   const title = (b.title || '').toString().slice(0, 128) || null;
   const config = b.config && typeof b.config === 'object' ? JSON.stringify(b.config) : null;
   const r = await exec(
@@ -27,5 +28,4 @@ export async function POST({ request }: any) {
   return json({ ok: true, id: (r as any).insertId });
 }
 
-function clamp(n: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, n | 0)); }
 function safeJson(v: any) { if (!v) return null; try { return typeof v === 'string' ? JSON.parse(v) : v; } catch { return null; } }

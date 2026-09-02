@@ -1,5 +1,6 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { exec } from '$lib/server/db';
+import { fail } from '$lib/server/api_error';
 
 export async function PATCH({ params, request }: any) {
   const id = Number(params.id);
@@ -16,7 +17,7 @@ export async function PATCH({ params, request }: any) {
       args.push(v);
     }
   }
-  if (sets.length === 0) throw error(400, 'No changes provided.');
+  if (sets.length === 0) fail(400, 'no_changes', 'No changes provided.');
   args.push(id);
   await exec(`UPDATE app_widgets SET ${sets.join(', ')} WHERE id = ?`, args);
   return json({ ok: true });

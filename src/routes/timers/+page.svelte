@@ -1,7 +1,10 @@
 <script lang="ts">
+  import { apiError } from '$lib/api';
+  import { toastError } from '$lib/ui/toast';
   import { invalidateAll, goto } from '$app/navigation';
   import { page } from '$app/stores';
   import Icon from '$lib/ui/Icon.svelte';
+  import Spinner from '$lib/ui/Spinner.svelte';
   import { t, tr, lang } from '$lib/i18n';
 
   type Timer = any;
@@ -157,7 +160,8 @@
     return lbl + extra;
   }
 
-  function statusBadge(s: string): string {
+  function statusBadge(s: string, retrying = false): string {
+    if (s === 'pending' && retrying) return 'badge-warn';
     return s === 'pending' ? 'badge-on'
          : s === 'done'    ? 'badge-off'
          : s === 'failed'  ? 'badge-err'
@@ -177,7 +181,7 @@
 
   async function submit(e?: Event) {
     e?.preventDefault();
-    if (f.device_ids.length === 0) { alert(tr('timers.pick_one_device')); return; }
+    if (f.device_ids.length === 0) { toastError(tr('timers.pick_one_device')); return; }
     busy = true;
     try {
       const isEdit = formMode === 'edit' && f.id;
@@ -217,7 +221,7 @@
         // Guard against an empty/cleared datetime-local: new Date('').toISOString()
         // throws RangeError, which (with no catch) silently aborted the submit.
         const at = new Date(f.run_at);
-        if (isNaN(at.getTime())) { alert(tr('timers.invalid_time')); return; }
+        if (isNaN(at.getTime())) { toastError(tr('timers.invalid_time')); return; }
         body.run_at = at.toISOString();
       }
       const url = isEdit ? `/api/timers/${f.id}` : '/api/timers';
@@ -226,7 +230,7 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body)
       });
-      if (!r.ok) { alert(await r.text()); return; }
+      if (!r.ok) { toastError(await apiError(r)); return; }
       formOpen = false; f = blank();
       await invalidateAll();
     } finally { busy = false; }
@@ -234,15 +238,17 @@
 
   async function cancelTimer(t: Timer) {
     if (!confirm(tr('timers.cancel_confirm'))) return;
-    await fetch(`/api/timers/${t.id}`, {
+    const r = await fetch(`/api/timers/${t.id}`, {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ status: 'cancelled' })
     });
+    if (!r.ok) { toastError(await apiError(r)); return; }
     await invalidateAll();
   }
   async function delTimer(t: Timer) {
     if (!confirm(tr('timers.delete_confirm'))) return;
-    await fetch(`/api/timers/${t.id}`, { method: 'DELETE' });
+    const r = await fetch(`/api/timers/${t.id}`, { method: 'DELETE' });
+    if (!r.ok) { toastError(await apiError(r)); return; }
     await invalidateAll();
   }
 
@@ -318,12 +324,20 @@
       </thead>
       <tbody>
         {#each data.timers as timer (timer.id)}
-          <tr class="border-t border-slate-100 dark:border-slate-800">
-            <td class="py-1 pr-2"><span class={statusBadge(timer.status)}>{$t('timers.status_' + timer.status) ?? timer.status}</span></td>
+          <tr class="border-t border-slate-100 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/40">
+            <td class="py-1 pr-2"><span class={statusBadge(timer.status, !!timer.retry_at)}>{$t('timers.status_' + timer.status) ?? timer.status}</span></td>
             <td class="whitespace-nowrap pr-2">
               <div class="font-mono text-xs">{new Date(timer.run_at).toLocaleString(localeStr)}</div>
               {#if timer.executed_at}
                 <div class="text-[10px] text-slate-500">{$t('timers.executed_short')} {new Date(timer.executed_at).toLocaleString(localeStr)}</div>
+              {/if}
+              <!-- A pending timer whose device did not answer keeps retrying;
+                   show when the next attempt is due so the state is not a mystery. -->
+              {#if timer.status === 'pending' && timer.retry_at}
+                <div class="text-[10px] text-amber-600 dark:text-amber-400">
+                  {tr('timers.retry_at', { ts: new Date(timer.retry_at).toLocaleString(localeStr) })}
+                  · {tr('timers.attempt_badge', { n: timer.attempt_count })}
+                </div>
               {/if}
               {#if timer.error_message}
                 <div class="text-[10px] text-rose-500" title={timer.error_message}>{$t('timers.error_prefix')} {timer.error_message.slice(0, 60)}</div>
@@ -342,6 +356,7 @@
             <td class="pr-2 text-xs">
               {repeatText(timer)}
               {#if timer.is_random}<span class="badge-warn ml-1">{$t('timers.vacation_badge')}</span>{/if}
+              {#if timer.is_revert}<span class="badge-off ml-1">{$t('timers.revert_badge')}</span>{/if}
             </td>
             <td class="pr-2 text-xs text-slate-500">{timer.note || ''}</td>
             <td class="text-right">
@@ -552,7 +567,7 @@
       <div class="flex justify-end gap-2">
         <button type="button" class="btn-ghost" onclick={() => { formOpen = false; }}>{$t('timers.cancel')}</button>
         <button type="submit" class="btn-primary inline-flex items-center gap-1" disabled={busy}>
-          <Icon name="check" size={14} />{busy ? $t('timers.saving_dots')
+          {#if busy}<Spinner size={14} />{:else}<Icon name="check" size={14} />{/if}{busy ? $t('timers.saving_dots')
             : (formMode === 'edit' ? $t('timers.saving_changes')
             : formMode === 'duplicate' ? $t('timers.creating_copy')
             : $t('timers.creating_save'))}

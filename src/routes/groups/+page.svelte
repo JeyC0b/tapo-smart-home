@@ -1,6 +1,9 @@
 <script lang="ts">
+  import { apiError } from '$lib/api';
+  import { toastError } from '$lib/ui/toast';
   import { invalidateAll } from '$app/navigation';
   import Icon from '$lib/ui/Icon.svelte';
+  import Spinner from '$lib/ui/Spinner.svelte';
   import { t, tr } from '$lib/i18n';
 
   let { data } = $props();
@@ -52,14 +55,14 @@
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body)
         });
-        if (!r.ok) { err = await r.text(); return; }
+        if (!r.ok) { err = await apiError(r); return; }
         id = (await r.json()).id;
       }
       const r2 = await fetch(`/api/groups/${id}`, {
         method: 'PATCH', headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body)
       });
-      if (!r2.ok) { err = await r2.text(); return; }
+      if (!r2.ok) { err = await apiError(r2); return; }
       const wasNew = !editing.id;
       editing = null;
       await invalidateAll();
@@ -69,12 +72,16 @@
 
   async function del(g: any) {
     if (!confirm(tr('groups.delete_confirm', { name: g.name }))) return;
-    await fetch(`/api/groups/${g.id}`, { method: 'DELETE' });
+    const r = await fetch(`/api/groups/${g.id}`, { method: 'DELETE' });
+    if (!r.ok) { toastError(await apiError(r)); return; }
     await invalidateAll();
   }
 
   async function toggle(g: any) {
-    await fetch(`/api/groups/${g.id}/toggle`, { method: 'POST', body: '{}' });
+    const r = await fetch(`/api/groups/${g.id}/toggle`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}'
+    });
+    if (!r.ok) toastError(await apiError(r));
     await invalidateAll();
   }
 
@@ -111,7 +118,7 @@
   <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
     {#each data.groups as g}
       {@const anyOn = g.members.some((m: any) => m.state === 1)}
-      <div class="card">
+      <div class="card card-hover">
         <div class="mb-2 flex items-center justify-between">
           <div class="flex items-center gap-2 min-w-0">
             <Icon name={g.icon || 'bulb'} size={18} class={anyOn ? 'text-emerald-500' : 'text-slate-400'}/>
@@ -224,7 +231,9 @@
 
       <div class="flex justify-end gap-2 pt-2">
         <button class="btn-ghost" onclick={() => editing = null}>{$t('common.cancel')}</button>
-        <button class="btn-primary" onclick={save} disabled={busy || !editing.name.trim()}>{$t('common.save')}</button>
+        <button class="btn-primary inline-flex items-center gap-1" onclick={save} disabled={busy || !editing.name.trim()}>
+          {#if busy}<Spinner size={14} />{/if}{busy ? $t('common.saving') : $t('common.save')}
+        </button>
       </div>
     </div>
   </div>

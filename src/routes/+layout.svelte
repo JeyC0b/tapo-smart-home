@@ -3,8 +3,11 @@
   import { page } from '$app/stores';
   import { invalidateAll, goto } from '$app/navigation';
   import Icon, { type IconName } from '$lib/ui/Icon.svelte';
+  import Toaster from '$lib/ui/Toaster.svelte';
+  import Spinner from '$lib/ui/Spinner.svelte';
   import { onMount, untrack } from 'svelte';
-  import { setLang, t, type LangCode } from '$lib/i18n';
+  import { setLang, t, tr, type LangCode } from '$lib/i18n';
+  import { apiError } from '$lib/api';
 
   let { data, children } = $props();
 
@@ -16,7 +19,9 @@
   // $effect alone runs only after hydration, which caused a flash of English on
   // every full load for Czech users. (SvelteKit renders SSR synchronously, so
   // setting the module store here is safe for this single-user app.)
-  setLang((data?.lang ?? 'en') as LangCode);
+  // `untrack` — this is a deliberate one-off read of the initial value; the
+  // $effect below is what follows later changes.
+  setLang(untrack(() => (data?.lang ?? 'en')) as LangCode);
   // Keep following later changes (e.g. the /settings switcher + invalidateAll).
   $effect(() => { setLang((data?.lang ?? 'en') as LangCode); });
 
@@ -65,9 +70,11 @@
           action: setupMode ? 'set_initial' : 'login'
         })
       });
-      if (!r.ok) { loginErr = await r.text(); return; }
+      if (!r.ok) { loginErr = await apiError(r); return; }
       loginPwd = ''; loginOpen = false;
       await invalidateAll();
+    } catch {
+      loginErr = tr('errors.network');
     } finally { loginBusy = false; }
   }
 
@@ -99,7 +106,7 @@
 <div class="mx-auto flex min-h-screen max-w-6xl flex-col">
   <header class="sticky top-0 z-30 border-b border-slate-200 bg-white/80 backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
     <div class="flex items-center justify-between px-4 py-3">
-      <a href="/" class="flex items-center gap-2 text-lg font-bold tracking-tight text-slate-900 dark:text-slate-50">
+      <a href="/" class="flex items-center gap-2 rounded-xl px-1 text-lg font-bold tracking-tight text-slate-900 transition hover:opacity-80 dark:text-slate-50">
         <Icon name="smarthome" size={22} class="text-brand-600 dark:text-brand-500" /> Tapo
       </a>
       <div class="flex items-center gap-1">
@@ -120,16 +127,16 @@
           <button type="button" onclick={doLogout}
                   aria-label={$t('auth.logout_admin')}
                   title={$t('auth.logout_admin')}
-                  class="ml-1 inline-flex h-9 w-9 items-center justify-center rounded-xl
-                         text-emerald-600 hover:bg-slate-100 dark:hover:bg-slate-800">
+                  class="ml-1 inline-flex h-9 w-9 items-center justify-center rounded-xl transition
+                         text-emerald-600 hover:bg-slate-100 active:scale-90 dark:hover:bg-slate-800">
             <Icon name="lock" size={18} />
           </button>
         {:else}
           <button type="button" onclick={() => { loginOpen = true; loginErr=''; }}
                   aria-label={passwordSet ? $t('auth.login_admin') : $t('auth.set_password')}
                   title={passwordSet ? $t('auth.login_admin') : $t('auth.set_password')}
-                  class="ml-1 inline-flex h-9 w-9 items-center justify-center rounded-xl
-                         text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">
+                  class="ml-1 inline-flex h-9 w-9 items-center justify-center rounded-xl transition
+                         text-slate-600 hover:bg-slate-100 active:scale-90 dark:text-slate-300 dark:hover:bg-slate-800">
             <Icon name="lock" size={18} />
           </button>
         {/if}
@@ -137,8 +144,8 @@
         <button type="button" onclick={toggleTheme}
                 aria-label={$t('layout.theme_toggle')}
                 title={$t('layout.theme_toggle')}
-                class="inline-flex h-9 w-9 items-center justify-center rounded-xl
-                       text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">
+                class="inline-flex h-9 w-9 items-center justify-center rounded-xl transition
+                       text-slate-600 hover:bg-slate-100 active:scale-90 dark:text-slate-300 dark:hover:bg-slate-800">
           {#if theme === 'dark'}
             <Icon name="sun" size={18} />
           {:else}
@@ -160,7 +167,8 @@
     <div class="flex overflow-x-auto">
       {#each nav as n}
         <a href={n.href}
-           class="flex shrink-0 flex-col items-center gap-0.5 px-3 py-2 min-w-[68px] text-[11px] font-medium
+           class="flex shrink-0 flex-col items-center gap-0.5 px-3 py-2 min-w-[68px] text-[11px] font-medium transition
+                  active:scale-95 hover:bg-slate-100 dark:hover:bg-slate-800
                   {$page.url.pathname === n.href ? 'text-brand-600' : 'text-slate-500'}">
           <Icon name={n.icon} size={20} />{$t(n.labelKey)}
         </a>
@@ -169,6 +177,8 @@
   </nav>
   {/if}
 </div>
+
+<Toaster />
 
 <!-- Login / setup modal -->
 {#if loginOpen}
@@ -200,7 +210,7 @@
       <div class="flex justify-end gap-2 pt-1">
         <button type="button" class="btn-ghost" onclick={() => loginOpen = false}>{$t('common.cancel')}</button>
         <button type="submit" class="btn-primary inline-flex items-center gap-1" disabled={loginBusy}>
-          <Icon name="check" size={14} />{setupMode ? $t('auth.set_password') : $t('auth.login')}
+          {#if loginBusy}<Spinner size={14} />{:else}<Icon name="check" size={14} />{/if}{setupMode ? $t('auth.set_password') : $t('auth.login')}
         </button>
       </div>
     </form>

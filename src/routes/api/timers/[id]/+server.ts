@@ -1,6 +1,6 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { q, exec } from '$lib/server/db';
-import { scheduleAt } from '$lib/server/tasks';
+import { fail } from '$lib/server/api_error';
 
 // Enum columns must be validated on PATCH too (the POST/create route does);
 // otherwise a client can write an unknown action/status/repeat_kind that the
@@ -26,9 +26,9 @@ export async function PATCH({ params, request }: any) {
   for (const k of allowed) {
     if (k in b) {
       let v = b[k];
-      if (k === 'action' && !TIMER_ACTIONS.has(v)) throw error(400, 'Invalid action.');
-      if (k === 'repeat_kind' && !TIMER_REPEATS.has(v)) throw error(400, 'Invalid repeat_kind.');
-      if (k === 'status' && !TIMER_STATUSES.has(v)) throw error(400, 'Invalid status.');
+      if (k === 'action' && !TIMER_ACTIONS.has(v)) fail(400, 'invalid_input', 'Invalid action.');
+      if (k === 'repeat_kind' && !TIMER_REPEATS.has(v)) fail(400, 'invalid_input', 'Invalid repeat_kind.');
+      if (k === 'status' && !TIMER_STATUSES.has(v)) fail(400, 'invalid_input', 'Invalid status.');
       sets.push(`${k} = ?`);
       if (v === '') v = null;
       if (k === 'run_at' && v) v = new Date(v);
@@ -48,7 +48,18 @@ export async function PATCH({ params, request }: any) {
       args.push(ids[0]);
     }
   }
-  if (sets.length === 0) throw error(400, 'No changes provided.');
+  if (sets.length === 0) fail(400, 'no_changes', 'No changes provided.');
+
+  // Editing the schedule (or re-activating a timer) clears the retry
+  // bookkeeping: the pinned per-device targets, the backoff timestamp and the
+  // "successor already queued" flag all describe the PREVIOUS run and would
+  // otherwise make the edited timer either skip its next occurrence or resume
+  // switching the devices from the old attempt.
+  if ('run_at' in b || 'status' in b || 'device_ids' in b || 'action' in b) {
+    sets.push('attempt_count = 0', 'retry_at = NULL', 'retry_targets = NULL',
+              'next_created = 0', 'error_message = NULL');
+  }
+
   args.push(id);
   await exec(`UPDATE app_scheduled_tasks SET ${sets.join(', ')} WHERE id = ?`, args);
   return json({ ok: true });
@@ -69,12 +80,12 @@ export async function POST({ params, request }: any) {
   const b = await request.json().catch(() => ({}));
   const rows = await q<any>('SELECT * FROM app_scheduled_tasks WHERE id = ?', [id]);
   const t = rows[0];
-  if (!t) throw error(404, 'Timer not found.');
+  if (!t) fail(404, 'not_found', 'Timer not found.');
 
   let runAt: Date;
   if (b.run_at) runAt = new Date(b.run_at);
   else runAt = new Date(Date.now() + (Number(b.in_seconds) || 60) * 1000);
-  if (isNaN(runAt.getTime())) throw error(400, 'Invalid time.');
+  if (isNaN(runAt.getTime())) fail(400, 'timer_bad_time', 'Invalid date/time.');
 
   await exec(
     `INSERT INTO app_scheduled_tasks

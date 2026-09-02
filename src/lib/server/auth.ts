@@ -12,7 +12,7 @@ const SESSION_TTL_DAYS = 30;
 // the next successful login.
 const SCRYPT_PREFIX = 'scrypt$';
 const SCRYPT_KEYLEN = 64;
-const MIN_PASSWORD_LEN = 8;
+export const MIN_PASSWORD_LEN = 8;
 
 function sha256(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex');
@@ -100,6 +100,39 @@ export const AUTH_COOKIE_OPTS = {
   // secure: true — leave the decision to the deployment (proxy / HTTPS)
   maxAge: SESSION_TTL_DAYS * 24 * 3600
 };
+
+/**
+ * Reads that expose the installation's configuration. GET is otherwise open
+ * (the dashboard has to work for guests), but these endpoints hand out hub IPs,
+ * the Tapo account e-mail, rules, timers and widget definitions — none of which
+ * a guest has any use for.
+ */
+const ADMIN_ONLY_READS: RegExp[] = [
+  /^\/api\/hubs(\/|$)/,            // hub IP + Tapo account e-mail
+  /^\/api\/rules(\/|$)/,
+  /^\/api\/dependencies(\/|$)/,
+  /^\/api\/timers(\/|$)/,
+  /^\/api\/scheduled-tasks(\/|$)/,
+  /^\/api\/discover(\/|$)/,
+  /^\/api\/groups$/,                // the group LIST; /api/groups/:id/* stays guest-usable
+  /^\/api\/widgets$/,               // the widget LIST; /api/widgets/:id/value stays public
+  /^\/api\/widgets\/proxy$/         // server-side fetch of an arbitrary URL
+];
+
+export function isAdminOnlyRead(pathname: string): boolean {
+  return ADMIN_ONLY_READS.some(re => re.test(pathname));
+}
+
+/**
+ * Pages that only make sense for the administrator. The nav already hides them,
+ * but the routes were still served on a direct URL — and their loaders return
+ * hub credentials, rule definitions and logs. Guests are redirected home.
+ */
+const ADMIN_ONLY_PAGES = /^\/(settings|devices|rules|widgets|logs|timers|groups)(\/|$)/;
+
+export function isAdminOnlyPage(pathname: string): boolean {
+  return ADMIN_ONLY_PAGES.test(pathname);
+}
 
 /**
  * Decides whether the given request may perform a mutation (POST/PATCH/DELETE).

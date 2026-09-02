@@ -3,16 +3,37 @@
 @tailwind utilities;
 
 @layer components {
-  .card { @apply rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900; }
-  .btn  { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50; }
-  .btn-primary  { @apply btn bg-brand-600 text-white hover:bg-brand-700 focus:ring-brand-500; }
+  /* `transition` + `duration-150` so the hover states below animate instead of snapping. */
+  .card { @apply rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition duration-150 dark:border-slate-800 dark:bg-slate-900; }
+  /* Lift on hover — for cards that merely react to the pointer. */
+  .card-hover  { @apply hover:border-slate-300 hover:shadow-md dark:hover:border-slate-700; }
+  /* …and for cards that are themselves a button: add the pointer + press feedback. */
+  .card-click  { @apply card-hover cursor-pointer hover:border-brand-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 active:scale-[0.99] dark:hover:border-brand-500; }
+
+  .btn  { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100; }
+  .btn-primary  { @apply btn bg-brand-600 text-white hover:bg-brand-700 hover:shadow-md focus:ring-brand-500; }
   .btn-ghost    { @apply btn bg-slate-100 text-slate-800 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700; }
-  .btn-danger   { @apply btn bg-rose-600 text-white hover:bg-rose-700 focus:ring-rose-500; }
-  .input        { @apply block w-full rounded-xl border-slate-300 bg-white text-sm shadow-sm focus:border-brand-500 focus:ring-brand-500 dark:border-slate-700 dark:bg-slate-900; }
+  .btn-danger   { @apply btn bg-rose-600 text-white hover:bg-rose-700 hover:shadow-md focus:ring-rose-500; }
+
+  /* On/off pill used by DeviceCard and GroupCard. */
+  .toggle-pill        { @apply relative h-9 w-16 shrink-0 rounded-full transition duration-150; }
+  .toggle-pill-active { @apply cursor-pointer hover:ring-4 hover:ring-brand-500/25 active:scale-95; }
+  .toggle-knob        { @apply absolute top-1 flex h-7 w-7 items-center justify-center rounded-full bg-white shadow transition-all; }
+
+  /* Covers a tile while its command is running, so the whole tile reads as busy. */
+  .busy-overlay { @apply absolute inset-0 z-20 flex items-center justify-center rounded-2xl bg-white/60 text-slate-600 dark:bg-slate-950/60 dark:text-slate-300; }
+
+  .input        { @apply block w-full rounded-xl border-slate-300 bg-white text-sm shadow-sm transition focus:border-brand-500 focus:ring-brand-500 dark:border-slate-700 dark:bg-slate-900; }
   .label        { @apply text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400; }
   .badge        { @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium; }
   .badge-on     { @apply badge bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300; }
   .badge-off    { @apply badge bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300; }
   .badge-warn   { @apply badge bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300; }
   .badge-err    { @apply badge bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300; }
+}
+
+/* Respect the OS "reduce motion" setting: keep the feedback, drop the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .btn:active, .card-click:active, .toggle-pill-active:active { transform: none; }
+  .animate-spin { animation-duration: 2s; }
 }

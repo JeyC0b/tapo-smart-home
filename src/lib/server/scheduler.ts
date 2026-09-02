@@ -7,6 +7,12 @@ import { refreshDueWidgets } from './widget_cache';
 import { log } from './logger';
 
 let started = false;
+// Timer handles of the PREVIOUS instance of this module, parked on globalThis.
+// Under `vite dev` every HMR update re-evaluates the server modules; a
+// module-local flag does not survive that, so each reload used to add another
+// full set of intervals. Several schedulers then polled the hubs and fired the
+// same timers side by side — with the old copies still running the old code.
+const TIMER_REGISTRY = '__tapo_scheduler_timers__';
 let pollRunning = new Set<number>();
 let taskRunning = false;       // single-flight guard: a slow tick must not overlap the next
 let lastPoll: Date | null = null;
@@ -32,12 +38,23 @@ async function prune(table: string, column: string, days: number, extraWhere = '
     total += n;
     if (n < 5000) break;
   }
-  if (total) await log('info', 'scheduler', `retention: pruned ${total} rows from ${table}`);
+  // debug, not info: this runs hourly for four tables and its own log rows are
+  // what the next sweep prunes — at info level it drowns the log viewer.
+  if (total) await log('debug', 'scheduler', `retention: pruned ${total} rows from ${table}`);
 }
 
 export function startScheduler() {
   if (started) return;
   started = true;
+
+  // Dispose the intervals a previous instance of this module registered.
+  const g = globalThis as Record<string, any>;
+  for (const h of (g[TIMER_REGISTRY] as any[] | undefined) ?? []) {
+    clearInterval(h);
+    clearTimeout(h);
+  }
+  const timers: any[] = [];
+  g[TIMER_REGISTRY] = timers;
 
   const envInt = Number(env.POLL_INTERVAL_SECONDS || 0);
   log('info', 'scheduler', `start, env override=${envInt || '(off)'}`);
@@ -143,12 +160,14 @@ export function startScheduler() {
   };
 
   // Initial poll after start (after 3 s) — acts as a "tick", so per-hub intervals are honoured.
-  setTimeout(masterTick, 3_000);
-  setInterval(masterTick, 10_000);
-  setInterval(taskTick, 10_000);
-  setInterval(widgetTick, 15_000);
-  setTimeout(retentionTick, 60_000);       // first sweep ~1 min after boot
-  setInterval(retentionTick, 3_600_000);   // then hourly
+  timers.push(
+    setTimeout(masterTick, 3_000),
+    setInterval(masterTick, 10_000),
+    setInterval(taskTick, 10_000),
+    setInterval(widgetTick, 15_000),
+    setTimeout(retentionTick, 60_000),      // first sweep ~1 min after boot
+    setInterval(retentionTick, 3_600_000)   // then hourly
+  );
 }
 
 export function schedulerStatus() {

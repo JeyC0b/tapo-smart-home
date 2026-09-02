@@ -1,9 +1,12 @@
 <script lang="ts">
+  import { apiError } from '$lib/api';
+  import { toastError } from '$lib/ui/toast';
   import type { Device } from '$lib/types';
   import { hsvToHex, hexToHsv } from '$lib/types';
   import { createEventDispatcher, untrack } from 'svelte';
   import { page } from '$app/stores';
   import Icon, { type IconName } from '$lib/ui/Icon.svelte';
+  import Spinner from '$lib/ui/Spinner.svelte';
   import { t, tr } from '$lib/i18n';
 
   /**
@@ -27,7 +30,9 @@
   } = $props();
 
   const dispatch = createEventDispatcher();
-  let busy = $state(false);
+  // Which control the user clicked — the spinner is rendered right there.
+  let busyKind = $state<null | 'toggle' | 'light' | 'countdown'>(null);
+  let busy = $derived(busyKind !== null);
   let panel = $state<'none' | 'light' | 'countdown'>('none');
 
   const isAdmin = $derived(!!$page.data.isAdmin);
@@ -53,22 +58,22 @@
   // Status: "any on" matches device-style power state.
   const isOn = $derived(!!groupState?.any_on);
 
-  async function call(url: string, body: any) {
-    busy = true;
+  async function call(url: string, body: any, kind: NonNullable<typeof busyKind> = 'toggle') {
+    busyKind = kind;
     try {
       const r = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body)
       });
-      if (!r.ok) alert(await r.text());
+      if (!r.ok) toastError(await apiError(r));
       dispatch('changed');
-    } finally { busy = false; }
+    } finally { busyKind = null; }
   }
 
   async function toggle() {
     // Group toggle: if anyone is on, turn all off; otherwise turn all on.
-    await call(`/api/groups/${group.id}/toggle`, { on: !isOn });
+    await call(`/api/groups/${group.id}/toggle`, { on: !isOn }, 'toggle');
   }
 
   // ----- Light controls -----
@@ -93,7 +98,7 @@
     return '#ffffff';
   }));
 
-  async function applyLight(p: any) { await call(`/api/groups/${group.id}/light`, p); }
+  async function applyLight(p: any) { await call(`/api/groups/${group.id}/light`, p, 'light'); }
   async function applyColorFromPicker() {
     const [h, s] = hexToHsv(pickerHex);
     await applyLight({ hsv: [h, s, bri] });
@@ -105,7 +110,7 @@
   async function applyCountdown() {
     await call(`/api/groups/${group.id}/countdown`, {
       seconds: cdMins * 60, action: cdAction
-    });
+    }, 'countdown');
     panel = 'none';
   }
 
@@ -121,7 +126,7 @@
   ];
 </script>
 
-<div class="card">
+<div class="card card-hover">
   <div class="flex items-start justify-between gap-3">
     <div class="min-w-0 flex-1">
       <div class="flex items-center gap-2">
@@ -140,24 +145,27 @@
     <button onclick={toggle} disabled={busy || !anyOnline || !canControl}
             aria-label={$t('group_card.toggle_aria')}
             aria-pressed={isOn}
+            aria-busy={busyKind === 'toggle'}
             title={canControl ? '' : $t('group_card.locked_hint')}
-            class="relative h-9 w-16 shrink-0 rounded-full transition
+            class="toggle-pill
+                   {canControl && anyOnline && !busy ? 'toggle-pill-active' : ''}
                    {!canControl ? 'opacity-50 cursor-not-allowed ' : ''}
                    {isOn ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'}">
-      <span class="absolute top-1 h-7 w-7 rounded-full bg-white shadow transition-all
-                   {isOn ? 'left-8' : 'left-1'}"></span>
+      <span class="toggle-knob {isOn ? 'left-8' : 'left-1'}">
+        {#if busyKind === 'toggle'}<Spinner size={14} class="text-slate-500" />{/if}
+      </span>
     </button>
   </div>
 
   <div class="mt-3 flex flex-wrap gap-1.5">
     {#if canControl && (capsUnion.brightness || capsUnion.color || capsUnion.color_temp)}
       <button class="btn-ghost inline-flex items-center gap-1 text-xs" onclick={() => panel = panel === 'light' ? 'none' : 'light'}>
-        <Icon name="bulb" size={12} />{$t('device_card.light')}
+        {#if busyKind === 'light'}<Spinner size={12} />{:else}<Icon name="bulb" size={12} />{/if}{$t('device_card.light')}
       </button>
     {/if}
     {#if canControl}
       <button class="btn-ghost inline-flex items-center gap-1 text-xs" onclick={() => panel = panel === 'countdown' ? 'none' : 'countdown'}>
-        <Icon name="refresh" size={12} />{$t('device_card.timer')}
+        {#if busyKind === 'countdown'}<Spinner size={12} />{:else}<Icon name="refresh" size={12} />{/if}{$t('device_card.timer')}
       </button>
     {/if}
   </div>
@@ -181,9 +189,10 @@
                    class="h-10 w-14 cursor-pointer rounded-lg border border-slate-300 dark:border-slate-700"/>
             <div class="flex flex-1 flex-wrap gap-1">
               {#each PALETTE as col}
-                <button title={col}
+                <button title={col} disabled={busy}
                         onclick={() => { pickerHex = col; applyColorFromPicker(); }}
-                        class="h-7 w-7 rounded-md border border-slate-200 transition hover:scale-110 dark:border-slate-700"
+                        class="h-7 w-7 rounded-md border border-slate-200 transition hover:scale-110 hover:border-slate-400
+                               active:scale-95 disabled:opacity-50 dark:border-slate-700"
                         style="background:{col}"></button>
               {/each}
             </div>
@@ -228,7 +237,9 @@
           <input class="input" type="number" min="1" bind:value={cdMins}/>
         </div>
       </div>
-      <button class="btn-primary w-full" onclick={applyCountdown} disabled={busy}>{$t('device_card.schedule')}</button>
+      <button class="btn-primary w-full" onclick={applyCountdown} disabled={busy}>
+        {#if busyKind === 'countdown'}<Spinner size={14} />{/if}{$t('device_card.schedule')}
+      </button>
     </div>
   {/if}
 </div>

@@ -1,7 +1,9 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { q } from '$lib/server/db';
 import { discoverNetwork, statusOf } from '$lib/server/kasa';
 import { getDefaultCredentials } from '$lib/server/settings';
+import { fail } from '$lib/server/api_error';
+import { log } from '$lib/server/logger';
 
 /**
  * POST /api/discover
@@ -30,7 +32,8 @@ export async function POST({ request }) {
     if (h[0]) { username = h[0].username; password = h[0].password; }
   }
   if (!username || !password) {
-    throw error(400, 'Tapo credentials are missing. Add them in Settings or create a hub.');
+    fail(400, 'credentials_missing',
+      'Tapo credentials are missing. Add them in Settings or create a hub.');
   }
 
   // Existing devices indexed by device_id and IP
@@ -52,7 +55,9 @@ export async function POST({ request }) {
       const r = await statusOf({ ip: b.ip, username, password });
       return json({ found: r.devices.map(d => ({ ...d, ip: b.ip })), unsupported: [] });
     } catch (e: any) {
-      throw error(400, e.message || 'discover failed');
+      await log('warn', 'api', `discover: cannot reach ${b.ip}`, { err: String(e?.message ?? e) });
+      fail(400, 'hub_unreachable',
+        'Could not connect to the device. Check the IP address and credentials.');
     }
   }
 
@@ -83,6 +88,7 @@ export async function POST({ request }) {
 
     return json({ ...r, found: annotated });
   } catch (e: any) {
-    throw error(500, e.message || 'discover failed');
+    await log('error', 'api', 'network discover failed', { err: String(e?.message ?? e) });
+    fail(502, 'discover_failed', 'Network scan failed.');
   }
 }

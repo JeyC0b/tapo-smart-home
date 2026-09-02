@@ -152,7 +152,7 @@
     </thead>
     <tbody>
       {#each data.logs as l (l.id)}
-        <tr class="border-t border-slate-100 align-top dark:border-slate-800">
+        <tr class="border-t border-slate-100 align-top transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/40">
           <td class="whitespace-nowrap py-1 pr-3 font-mono text-xs text-slate-500">
             {new Date(l.created_at).toLocaleString($lang === 'cs' ? 'cs-CZ' : 'en-US')}
           </td>

@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { apiError } from '$lib/api';
+  import { toastError } from '$lib/ui/toast';
   import { invalidateAll } from '$app/navigation';
   import { page } from '$app/stores';
   import { untrack } from 'svelte';
   import Icon from '$lib/ui/Icon.svelte';
+  import Spinner from '$lib/ui/Spinner.svelte';
   import { setLang, t, tr, type LangCode } from '$lib/i18n';
 
   let { data }: { data: { settings: any } } = $props();
@@ -15,7 +18,7 @@
 
   async function changeAdminPassword() {
     adminMsg = '';
-    if (adminPwd.length < 4) { adminMsg = tr('settings.password_min'); return; }
+    if (adminPwd.length < 8) { adminMsg = tr('settings.password_min'); return; }
     if (adminPwd !== adminPwd2) { adminMsg = tr('settings.password_mismatch'); return; }
     adminBusy = true;
     try {
@@ -23,7 +26,7 @@
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ action: 'change', password: adminPwd })
       });
-      if (!r.ok) { adminMsg = await r.text(); return; }
+      if (!r.ok) { adminMsg = await apiError(r); return; }
       adminPwd = ''; adminPwd2 = '';
       adminMsg = tr('settings.password_changed');
       await invalidateAll();
@@ -38,7 +41,7 @@
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ action: 'disable' })
       });
-      if (!r.ok) { adminMsg = await r.text(); return; }
+      if (!r.ok) { adminMsg = await apiError(r); return; }
       adminMsg = tr('settings.password_disabled');
       await invalidateAll();
     } finally { adminBusy = false; }
@@ -61,14 +64,16 @@
         verify_actions: !!s.verify_actions,
         default_username: s.default_username || '',
         log_level: s.log_level || 'info',
-        default_language: (s.default_language === 'cs' ? 'cs' : 'en') as LangCode
+        default_language: (s.default_language === 'cs' ? 'cs' : 'en') as LangCode,
+        task_retry_minutes: Math.max(0, Number(s.task_retry_minutes) || 0),
+        task_revert_retry_minutes: Math.max(0, Number(s.task_revert_retry_minutes) || 0)
       };
       if (newPassword) body.default_password = newPassword;
       const r = await fetch('/api/settings', {
         method: 'PATCH', headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body)
       });
-      if (!r.ok) { alert(await r.text()); return; }
+      if (!r.ok) { toastError(await apiError(r)); return; }
       newPassword = '';
       saved = true;
       // Apply the language immediately (writes the cookie + updates the store).
@@ -121,7 +126,7 @@
   {/if}
   <div class="flex flex-wrap gap-2">
     <button class="btn-primary inline-flex items-center gap-1" onclick={changeAdminPassword} disabled={adminBusy}>
-      <Icon name="check" size={14} />{passwordSet ? $t('settings.change_password') : $t('settings.set_password')}
+      {#if adminBusy}<Spinner size={14} />{:else}<Icon name="check" size={14} />{/if}{passwordSet ? $t('settings.change_password') : $t('settings.set_password')}
     </button>
     {#if passwordSet}
       <button class="btn-danger inline-flex items-center gap-1" onclick={disableAdminPassword} disabled={adminBusy}>
@@ -174,6 +179,23 @@
 
 <div class="card mb-6 space-y-3">
   <h2 class="flex items-center gap-2 font-semibold">
+    <Icon name="refresh" size={16} />{$t('settings.reliability')}
+  </h2>
+  <p class="text-xs text-slate-500">{$t('settings.reliability_hint')}</p>
+  <div class="grid gap-3 sm:grid-cols-2">
+    <div>
+      <div class="label">{$t('settings.task_retry_minutes')}</div>
+      <input class="input" type="number" min="0" max="10080" step="5" bind:value={s.task_retry_minutes}/>
+    </div>
+    <div>
+      <div class="label">{$t('settings.task_revert_retry_minutes')}</div>
+      <input class="input" type="number" min="0" max="10080" step="30" bind:value={s.task_revert_retry_minutes}/>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-6 space-y-3">
+  <h2 class="flex items-center gap-2 font-semibold">
     <Icon name="logs" size={16} />{$t('settings.logging')}
   </h2>
   <p class="text-xs text-slate-500">
@@ -192,7 +214,7 @@
 
 <div class="flex items-center gap-3">
   <button class="btn-primary inline-flex items-center gap-1" onclick={save} disabled={saving}>
-    <Icon name="check" size={14} />{saving ? $t('common.saving') : $t('common.save')}
+    {#if saving}<Spinner size={14} />{:else}<Icon name="check" size={14} />{/if}{saving ? $t('common.saving') : $t('common.save')}
   </button>
   {#if saved}
     <span class="inline-flex items-center gap-1 text-sm text-emerald-600">
